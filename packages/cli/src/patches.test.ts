@@ -368,6 +368,12 @@ export function writeMessageOut(msg: WriteMessageOut): number {
   it('throws on session-manager body-end and delivery restore edge cases', () => {
     expect(() =>
       patchSessionManager(`import x from 'y';
+export function nope(): void {}
+`),
+    ).toThrow(/writeSessionMessage export/);
+
+    expect(() =>
+      patchSessionManager(`import x from 'y';
 export function writeSessionMessage(
   agentGroupId: string,
   sessionId: string,
