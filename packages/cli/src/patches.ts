@@ -13,6 +13,80 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Shared body for projecting routing + destinations into the HTTP mailbox.
+ * Used by both spawnContainer (container-runner-meta) and wakeContainer
+ * (wake-prepare-meta) so the two call sites cannot drift.
+ */
+function buildSyncSessionMetaBlock(opts: {
+  indent: string;
+  agentGroupIdExpr: string;
+  sessionIdExpr: string;
+  threadIdExpr: string;
+}): string {
+  const i = opts.indent;
+  const { agentGroupIdExpr: ag, sessionIdExpr: sid, threadIdExpr: tid } = opts;
+  return `${i}{
+${i}  const transport = resolveSessionTransport({
+${i}    agentGroupId: ${ag},
+${i}    sessionId: ${sid},
+${i}  });
+${i}  // Project host routing/destinations into the HTTP mailbox store (not {}).
+${i}  let meta: {
+${i}    routing: {
+${i}      channel_type: string | null;
+${i}      platform_id: string | null;
+${i}      thread_id: string | null;
+${i}    };
+${i}    destinations?: Array<{
+${i}      name: string;
+${i}      display_name: string | null;
+${i}      type: 'channel' | 'agent';
+${i}      channel_type: string | null;
+${i}      platform_id: string | null;
+${i}      agent_group_id: string | null;
+${i}    }>;
+${i}  } = {
+${i}    routing: {
+${i}      channel_type: null,
+${i}      platform_id: null,
+${i}      thread_id: ${tid},
+${i}    },
+${i}  };
+${i}  try {
+${i}    const { openInboundDb } = await import('./session-manager.js');
+${i}    const db = openInboundDb(${ag}, ${sid});
+${i}    try {
+${i}      const row = db
+${i}        .prepare(
+${i}          'SELECT channel_type, platform_id, thread_id FROM session_routing WHERE id = 1',
+${i}        )
+${i}        .get() as
+${i}        | {
+${i}            channel_type: string | null;
+${i}            platform_id: string | null;
+${i}            thread_id: string | null;
+${i}          }
+${i}        | undefined;
+${i}      if (row) meta.routing = row;
+${i}      meta.destinations = db
+${i}        .prepare(
+${i}          'SELECT name, display_name, type, channel_type, platform_id, agent_group_id FROM destinations ORDER BY name',
+${i}        )
+${i}        .all() as NonNullable<typeof meta.destinations>;
+${i}    } finally {
+${i}      db.close();
+${i}    }
+${i}  } catch {
+${i}    // Session DB may not exist yet; still sync thread_id from the Session row.
+${i}  }
+${i}  void transport.syncSessionMeta?.(
+${i}    { agentGroupId: ${ag}, sessionId: ${sid} },
+${i}    meta,
+${i}  );
+${i}}`;
+}
+
 function replaceOnce(content: string, search: string, replacement: string, label: string): string {
   const first = content.indexOf(search);
   if (first < 0) throw new Error(`Could not find ${label} anchor`);
@@ -86,22 +160,16 @@ export function patchSessionManager(source: string): string {
     );
 
     // Real NanoClaw uses `localPath` in this docblock; keep a fallback for older fixtures.
-    const bodyEndCandidates = [
-      `  updateSession(sessionId, { last_active: new Date().toISOString() });
-}
-
-/**
- * If message content has attachments with base64 \`data\`, save them to
- * the session's inbox directory and replace with \`localPath\`.`,
-      `  updateSession(sessionId, { last_active: new Date().toISOString() });
-}
-
-/**
- * If message content has attachments with base64 \`data\`, save them to
- * the session's inbox directory and replace with file paths.`,
-    ];
-    const bodyEnd = bodyEndCandidates.find((candidate) => content.includes(candidate));
-    if (!bodyEnd) throw new Error('Could not find writeSessionMessage body end anchor');
+    // Allow extra blank lines after `}` — uninstall used to leave an extra newline and
+    // a strict exact-string anchor then blocked reinstall.
+    const bodyEndMatch = content.match(
+      /  updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\r?\n\}\r?\n+(\/\*\*\r?\n \* If message content has attachments with base64 `data`, save them to\r?\n \* the session's inbox directory and replace with (?:`localPath`|file paths)\.)/,
+    );
+    if (!bodyEndMatch || bodyEndMatch.index === undefined) {
+      throw new Error('Could not find writeSessionMessage body end anchor');
+    }
+    const bodyEnd = bodyEndMatch[0];
+    const docblockStart = bodyEndMatch[1];
 
     const writeWrapper = `${marked(
       'session-manager-write',
@@ -124,7 +192,7 @@ export function patchSessionManager(source: string): string {
 
 ${writeWrapper}
 
-${bodyEnd.slice(bodyEnd.indexOf('/**'))}`,
+${docblockStart}`,
       'writeSessionMessage body end',
     );
   }
@@ -139,6 +207,11 @@ export function uninstallSessionManager(source: string): string {
       `export function filesystemWriteSessionMessage\\( // ${escapeRegExp(SESSIONIO_MARKER)}:renamed-write`,
     ),
     'export function writeSessionMessage(',
+  );
+  // Normalize spacing so a later install can re-find the body-end anchor.
+  content = content.replace(
+    /(  updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\r?\n\})\r?\n+(?=\/\*\*)/,
+    '$1\n\n',
   );
   return content;
 }
@@ -484,74 +557,56 @@ export function patchContainerRunner(source: string): string {
     }
   }
 
+  // Stock writeSessionRouting must stay OUTSIDE the marker — uninstallMarks would
+  // otherwise delete it (same failure mode as index delivery polls).
+  if (!content.includes('writeSessionRouting(agentGroup.id, session.id);')) {
+    if (!content.includes(spawnLog)) {
+      throw new Error('Could not find container-runner writeSessionRouting or spawn log anchor');
+    }
+    content = replaceOnce(
+      content,
+      spawnLog,
+      `  writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
+      'container-runner restore writeSessionRouting',
+    );
+  }
+
   if (!content.includes(begin('container-runner-meta'))) {
     content = replaceOnce(
       content,
       `  writeSessionRouting(agentGroup.id, session.id);`,
-      marked(
-        'container-runner-meta',
-        `  writeSessionRouting(agentGroup.id, session.id);
-  {
-    const transport = resolveSessionTransport({
-      agentGroupId: agentGroup.id,
-      sessionId: session.id,
-    });
-    // Project host routing/destinations into the HTTP mailbox store (not {}).
-    let meta: {
-      routing: {
-        channel_type: string | null;
-        platform_id: string | null;
-        thread_id: string | null;
-      };
-      destinations?: Array<{
-        name: string;
-        display_name: string | null;
-        type: 'channel' | 'agent';
-        channel_type: string | null;
-        platform_id: string | null;
-        agent_group_id: string | null;
-      }>;
-    } = {
-      routing: {
-        channel_type: null,
-        platform_id: null,
-        thread_id: session.thread_id ?? null,
-      },
-    };
-    try {
-      const { openInboundDb } = await import('./session-manager.js');
-      const db = openInboundDb(agentGroup.id, session.id);
-      try {
-        const row = db
-          .prepare(
-            'SELECT channel_type, platform_id, thread_id FROM session_routing WHERE id = 1',
-          )
-          .get() as
-          | {
-              channel_type: string | null;
-              platform_id: string | null;
-              thread_id: string | null;
-            }
-          | undefined;
-        if (row) meta.routing = row;
-        meta.destinations = db
-          .prepare(
-            'SELECT name, display_name, type, channel_type, platform_id, agent_group_id FROM destinations ORDER BY name',
-          )
-          .all() as NonNullable<typeof meta.destinations>;
-      } finally {
-        db.close();
-      }
-    } catch {
-      // Session DB may not exist yet; still sync thread_id from the Session row.
-    }
-    void transport.syncSessionMeta?.(
-      { agentGroupId: agentGroup.id, sessionId: session.id },
-      meta,
-    );
-  }`,
-      ),
+      `  writeSessionRouting(agentGroup.id, session.id);
+${marked(
+  'container-runner-meta',
+  buildSyncSessionMetaBlock({
+    indent: '  ',
+    agentGroupIdExpr: 'agentGroup.id',
+    sessionIdExpr: 'session.id',
+    threadIdExpr: 'session.thread_id ?? null',
+  }),
+)}`,
       'container-runner writeSessionRouting',
+    );
+  }
+
+  // Process/other runtimes skip spawnContainer — project mailbox meta on every wake.
+  // Slot comment is owned by agenthosts (must not use :begin/:end or the install
+  // guard would see the empty slot as already installed and skip injection).
+  const wakeMetaSlot = '    // @nanoclaw-sessionio:wake-prepare-meta-slot';
+  if (content.includes(wakeMetaSlot) && !content.includes(begin('wake-prepare-meta'))) {
+    content = replaceOnce(
+      content,
+      wakeMetaSlot,
+      marked(
+        'wake-prepare-meta',
+        buildSyncSessionMetaBlock({
+          indent: '    ',
+          agentGroupIdExpr: 'session.agent_group_id',
+          sessionIdExpr: 'session.id',
+          threadIdExpr: 'session.thread_id ?? null',
+        }),
+      ),
+      'container-runner wake-prepare-meta',
     );
   }
 
@@ -585,12 +640,35 @@ export function patchContainerRunner(source: string): string {
 }
 
 export function uninstallContainerRunner(source: string): string {
-  return uninstallMarks(source, [
+  let next = uninstallMarks(source, [
     'container-runner-env',
     'container-runner-meta',
     'container-runner-docker-env-import',
     'container-runner-import',
   ]);
+  // Restore the agenthosts-owned slot so a later sessionio install can re-inject.
+  if (next.includes(begin('wake-prepare-meta'))) {
+    next = next.replace(
+      new RegExp(
+        `^[ \\t]*${escapeRegExp(begin('wake-prepare-meta'))}\\r?\\n[\\s\\S]*?^[ \\t]*${escapeRegExp(end('wake-prepare-meta'))}\\r?\\n?`,
+        'm',
+      ),
+      '    // @nanoclaw-sessionio:wake-prepare-meta-slot\n',
+    );
+  }
+  // Older installs put writeSessionRouting inside container-runner-meta; restore it.
+  const spawnLog =
+    "  log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });";
+  if (
+    !next.includes('writeSessionRouting(agentGroup.id, session.id);') &&
+    next.includes(spawnLog)
+  ) {
+    next = next.replace(
+      spawnLog,
+      `  writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
+    );
+  }
+  return next;
 }
 
 export function patchIndex(source: string): string {
@@ -603,18 +681,21 @@ export function patchIndex(source: string): string {
     throw new Error('Could not find index.ts delivery poll boot anchor');
   }
 
+  // Only sessionio boot lives inside the marker. Stock delivery poll starts must
+  // stay outside — uninstallMarks would otherwise delete them and leave the host
+  // logging "Delivery polls started" without ever calling the poll functions.
   return replaceOnce(
     source,
     anchor,
-    marked(
+    `${marked(
       'index-boot',
       `  {
     const { startSessionio } = await import('./sessionio-boot.js');
     await startSessionio();
-  }
+  }`,
+    )}
   startActiveDeliveryPoll();
   startSweepDeliveryPoll();`,
-    ),
     'index delivery poll boot',
   );
 }

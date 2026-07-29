@@ -8,14 +8,17 @@ import {
   patchSessionManager,
   uninstallContainerRunner,
   uninstallDelivery,
+  uninstallIndex,
   uninstallMessagesOut,
   uninstallPollLoop,
+  uninstallSessionManager,
 } from './patches.js';
 import {
   STOCK_CONTAINER_RUNNER,
   STOCK_INDEX,
   STOCK_MESSAGES_OUT,
   STOCK_POLL_LOOP,
+  STOCK_SESSION_MANAGER,
 } from './test-fixtures.js';
 
 const SESSIONIO_MARKER = '@nanoclaw-sessionio';
@@ -86,6 +89,40 @@ describe('remaining patches', () => {
     expect(uninstallContainerRunner(patched)).not.toContain(
       '@nanoclaw-sessionio:container-runner-meta:begin',
     );
+    // Stock writeSessionRouting must survive uninstall (lives outside the marker).
+    expect(uninstallContainerRunner(patched)).toContain(
+      'writeSessionRouting(agentGroup.id, session.id);',
+    );
+  });
+
+  it('restores missing spawn writeSessionRouting then installs meta', () => {
+    const missing = STOCK_CONTAINER_RUNNER.replace(
+      '  writeSessionRouting(agentGroup.id, session.id);\n\n',
+      '',
+    );
+    expect(missing).not.toContain('writeSessionRouting(agentGroup.id, session.id);');
+    const patched = patchContainerRunner(missing);
+    expect(patched).toContain('writeSessionRouting(agentGroup.id, session.id);');
+    expect(patched).toContain('@nanoclaw-sessionio:container-runner-meta:begin');
+    expect(uninstallContainerRunner(patched)).toContain(
+      'writeSessionRouting(agentGroup.id, session.id);',
+    );
+  });
+
+  it('fills agenthosts wake-prepare-meta-slot with syncSessionMeta', () => {
+    const patched = patchContainerRunner(STOCK_CONTAINER_RUNNER);
+    expect(patched).toContain('@nanoclaw-sessionio:wake-prepare-meta:begin');
+    expect(patched).toContain('agentGroupId: session.agent_group_id');
+    expect(patched).toContain('sessionId: session.id');
+    expect(patched).toMatch(
+      /wake-prepare-meta:begin[\s\S]*syncSessionMeta\?\.\([\s\S]*wake-prepare-meta:end/,
+    );
+    expect(patched).not.toContain('wake-prepare-meta-slot');
+    expect(patchContainerRunner(patched)).toBe(patched);
+
+    const uninstalled = uninstallContainerRunner(patched);
+    expect(uninstalled).toContain('// @nanoclaw-sessionio:wake-prepare-meta-slot');
+    expect(uninstalled).not.toContain('@nanoclaw-sessionio:wake-prepare-meta:begin');
   });
 
   it('upgrades stale container-runner-meta that synced empty {}', () => {
@@ -101,6 +138,49 @@ describe('remaining patches', () => {
     const upgraded = patchContainerRunner(stale);
     expect(upgraded).toContain('session_routing');
     expect(upgraded).not.toContain('{},\n    );');
+  });
+
+  it('upgrades stale empty-meta that wrapped writeSessionRouting inside the marker', () => {
+    // Older installs put writeSessionRouting inside container-runner-meta.
+    const stale = STOCK_CONTAINER_RUNNER.replace(
+      '  writeSessionRouting(agentGroup.id, session.id);',
+      `${begin('container-runner-meta')}
+  writeSessionRouting(agentGroup.id, session.id);
+  {
+    const transport = resolveSessionTransport({
+      agentGroupId: agentGroup.id,
+      sessionId: session.id,
+    });
+    void transport.syncSessionMeta?.(
+      { agentGroupId: agentGroup.id, sessionId: session.id },
+      {},
+    );
+  }
+${end('container-runner-meta')}`,
+    );
+    expect(stale).toContain('{},\n    );');
+    const upgraded = patchContainerRunner(stale);
+    expect(upgraded).toContain('writeSessionRouting(agentGroup.id, session.id);');
+    expect(upgraded).toContain('@nanoclaw-sessionio:container-runner-meta:begin');
+    expect(upgraded).toContain('session_routing');
+    expect(upgraded).not.toContain('{},\n    );');
+  });
+
+  it('uninstall restores writeSessionRouting when old meta marker ate it', () => {
+    const withOld = STOCK_CONTAINER_RUNNER.replace(
+      '  writeSessionRouting(agentGroup.id, session.id);',
+      `${begin('container-runner-meta')}
+  writeSessionRouting(agentGroup.id, session.id);
+  { void 0; }
+${end('container-runner-meta')}`,
+    );
+    expect(withOld.match(/writeSessionRouting\(agentGroup\.id, session\.id\);/g)).toHaveLength(1);
+    const restored = uninstallContainerRunner(withOld);
+    expect(restored).not.toContain('container-runner-meta');
+    expect(restored).toContain('writeSessionRouting(agentGroup.id, session.id);');
+    expect(restored).toContain(
+      "log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });",
+    );
   });
 
   it('upgrades stale append-style container-runner env blocks', () => {
@@ -258,7 +338,40 @@ export function writeMessageOut(msg: WriteMessageOut): number {
     expect(patchIndex(STOCK_INDEX)).toContain('startSessionio');
   });
 
+  it('uninstallIndex preserves stock delivery poll starts', () => {
+    const installed = patchIndex(STOCK_INDEX);
+    expect(installed).toContain('@nanoclaw-sessionio:index-boot:begin');
+    expect(installed).toContain('startSessionio');
+    const restored = uninstallIndex(installed);
+    expect(restored).not.toContain('@nanoclaw-sessionio:index-boot');
+    expect(restored).not.toContain('startSessionio');
+    expect(restored).toContain('startActiveDeliveryPoll();');
+    expect(restored).toContain('startSweepDeliveryPoll();');
+    expect(restored).toBe(STOCK_INDEX);
+  });
+
+  it('reinstalls session-manager after uninstall left extra blank lines', () => {
+    const installed = patchSessionManager(STOCK_SESSION_MANAGER);
+    const restored = uninstallSessionManager(installed);
+    // Simulate older uninstall that left an extra blank before the docblock.
+    const dirty = restored.replace(
+      /updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\n\}\n\n\/\*\*/,
+      'updateSession(sessionId, { last_active: new Date().toISOString() });\n}\n\n\n/**',
+    );
+    expect(dirty).not.toBe(restored);
+    const reinstalled = patchSessionManager(dirty);
+    expect(reinstalled).toContain('filesystemWriteSessionMessage');
+    expect(reinstalled).toContain('@nanoclaw-sessionio:session-manager-write:begin');
+    expect(uninstallSessionManager(reinstalled)).toContain('export function writeSessionMessage(');
+  });
+
   it('throws on session-manager body-end and delivery restore edge cases', () => {
+    expect(() =>
+      patchSessionManager(`import x from 'y';
+export function nope(): void {}
+`),
+    ).toThrow(/writeSessionMessage export/);
+
     expect(() =>
       patchSessionManager(`import x from 'y';
 export function writeSessionMessage(
@@ -291,10 +404,19 @@ import fs from 'fs';
       patchContainerRunner(`import { x } from 'y';
 export async function wakeContainer(agentGroup: { id: string; name: string }, session: { id: string }, containerName: string): Promise<void> {
   const args: string[] = [];
+}
+`),
+    ).toThrow(/writeSessionRouting or spawn log anchor/);
+
+    // Missing writeSessionRouting but spawn log present → restore then patch.
+    const restored = patchContainerRunner(`import { x } from 'y';
+export async function wakeContainer(agentGroup: { id: string; name: string }, session: { id: string }, containerName: string): Promise<void> {
+  const args: string[] = [];
   log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
 }
 const log = { info: (..._a: unknown[]) => undefined };
-`),
-    ).toThrow(/writeSessionRouting/);
+`);
+    expect(restored).toContain('writeSessionRouting(agentGroup.id, session.id);');
+    expect(restored).toContain('@nanoclaw-sessionio:container-runner-meta:begin');
   });
 });
