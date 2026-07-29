@@ -8,6 +8,7 @@ import {
   patchSessionManager,
   uninstallContainerRunner,
   uninstallDelivery,
+  uninstallIndex,
   uninstallMessagesOut,
   uninstallPollLoop,
 } from './patches.js';
@@ -272,6 +273,18 @@ export function writeMessageOut(msg: WriteMessageOut): number {
       /delivery poll boot anchor/,
     );
     expect(patchIndex(STOCK_INDEX)).toContain('startSessionio');
+  });
+
+  it('uninstallIndex preserves stock delivery poll starts', () => {
+    const installed = patchIndex(STOCK_INDEX);
+    expect(installed).toContain('@nanoclaw-sessionio:index-boot:begin');
+    expect(installed).toContain('startSessionio');
+    const restored = uninstallIndex(installed);
+    expect(restored).not.toContain('@nanoclaw-sessionio:index-boot');
+    expect(restored).not.toContain('startSessionio');
+    expect(restored).toContain('startActiveDeliveryPoll();');
+    expect(restored).toContain('startSweepDeliveryPoll();');
+    expect(restored).toBe(STOCK_INDEX);
   });
 
   it('throws on session-manager body-end and delivery restore edge cases', () => {

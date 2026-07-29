@@ -656,18 +656,21 @@ export function patchIndex(source: string): string {
     throw new Error('Could not find index.ts delivery poll boot anchor');
   }
 
+  // Only sessionio boot lives inside the marker. Stock delivery poll starts must
+  // stay outside — uninstallMarks would otherwise delete them and leave the host
+  // logging "Delivery polls started" without ever calling the poll functions.
   return replaceOnce(
     source,
     anchor,
-    marked(
+    `${marked(
       'index-boot',
       `  {
     const { startSessionio } = await import('./sessionio-boot.js');
     await startSessionio();
-  }
+  }`,
+    )}
   startActiveDeliveryPoll();
   startSweepDeliveryPoll();`,
-    ),
     'index delivery poll boot',
   );
 }

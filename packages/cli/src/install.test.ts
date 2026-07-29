@@ -134,7 +134,10 @@ describe('patches', () => {
 
     const index = patchIndex(STOCK_INDEX);
     expect(index).toContain('startSessionio');
-    expect(uninstallIndex(index)).not.toContain('@nanoclaw-sessionio:index-boot:begin');
+    const restoredIndex = uninstallIndex(index);
+    expect(restoredIndex).not.toContain('@nanoclaw-sessionio:index-boot:begin');
+    expect(restoredIndex).toContain('startActiveDeliveryPoll();');
+    expect(restoredIndex).toContain('startSweepDeliveryPoll();');
   });
 
   it('FILE_TRANSFORMS cover expected paths', () => {
