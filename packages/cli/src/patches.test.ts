@@ -319,9 +319,7 @@ export function writeMessageOut(msg: WriteMessageOut): number {
     const reinstalled = patchSessionManager(dirty);
     expect(reinstalled).toContain('filesystemWriteSessionMessage');
     expect(reinstalled).toContain('@nanoclaw-sessionio:session-manager-write:begin');
-    expect(uninstallSessionManager(reinstalled)).toContain(
-      'export function writeSessionMessage(',
-    );
+    expect(uninstallSessionManager(reinstalled)).toContain('export function writeSessionMessage(');
   });
 
   it('throws on session-manager body-end and delivery restore edge cases', () => {

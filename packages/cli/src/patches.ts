@@ -561,9 +561,7 @@ export function patchContainerRunner(source: string): string {
   // otherwise delete it (same failure mode as index delivery polls).
   if (!content.includes('writeSessionRouting(agentGroup.id, session.id);')) {
     if (!content.includes(spawnLog)) {
-      throw new Error(
-        'Could not find container-runner writeSessionRouting or spawn log anchor',
-      );
+      throw new Error('Could not find container-runner writeSessionRouting or spawn log anchor');
     }
     content = replaceOnce(
       content,
