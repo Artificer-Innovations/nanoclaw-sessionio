@@ -154,7 +154,9 @@ export function printInstallNextSteps(
   console.log('  3. pnpm exec nanoclaw-sessionio verify');
   console.log('  4. Restart the NanoClaw host service.');
   console.log('  Default transport is filesystem (zero behavior change).');
-  console.log('  For loopback HTTP: SESSIONIO_TRANSPORT=loopback in .env');
+  console.log('  For local Docker HTTP: SESSIONIO_TRANSPORT=loopback (alias of http) in .env');
+  console.log('  For remote agents: SESSIONIO_TRANSPORT=http + reachable SESSIONIO_BASE_URL');
+  console.log('  See QUICKSTART.md for env var details.');
 }
 
 function scaffoldEnvKeys(pending: PendingWrite[], unchanged: string[], root: string): void {
@@ -167,8 +169,10 @@ function scaffoldEnvKeys(pending: PendingWrite[], unchanged: string[], root: str
     const original = content;
     if (!content.includes('SESSIONIO_TRANSPORT')) {
       content +=
-        '\n# nanoclaw-sessionio — mailbox transport (filesystem | http | loopback)\n' +
+        '\n# nanoclaw-sessionio — mailbox transport\n' +
+        '# filesystem (default) | http (remote/no shared mount) | loopback (= http alias)\n' +
         'SESSIONIO_TRANSPORT=filesystem\n' +
+        '# For http/loopback: host listens on HTTP_HOST:PORT; agent dials BASE_URL\n' +
         '# SESSIONIO_HTTP_HOST=0.0.0.0\n' +
         '# SESSIONIO_HTTP_PORT=18765\n' +
         '# SESSIONIO_BASE_URL=http://host.docker.internal:18765\n' +
