@@ -13,6 +13,80 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Shared body for projecting routing + destinations into the HTTP mailbox.
+ * Used by both spawnContainer (container-runner-meta) and wakeContainer
+ * (wake-prepare-meta) so the two call sites cannot drift.
+ */
+function buildSyncSessionMetaBlock(opts: {
+  indent: string;
+  agentGroupIdExpr: string;
+  sessionIdExpr: string;
+  threadIdExpr: string;
+}): string {
+  const i = opts.indent;
+  const { agentGroupIdExpr: ag, sessionIdExpr: sid, threadIdExpr: tid } = opts;
+  return `${i}{
+${i}  const transport = resolveSessionTransport({
+${i}    agentGroupId: ${ag},
+${i}    sessionId: ${sid},
+${i}  });
+${i}  // Project host routing/destinations into the HTTP mailbox store (not {}).
+${i}  let meta: {
+${i}    routing: {
+${i}      channel_type: string | null;
+${i}      platform_id: string | null;
+${i}      thread_id: string | null;
+${i}    };
+${i}    destinations?: Array<{
+${i}      name: string;
+${i}      display_name: string | null;
+${i}      type: 'channel' | 'agent';
+${i}      channel_type: string | null;
+${i}      platform_id: string | null;
+${i}      agent_group_id: string | null;
+${i}    }>;
+${i}  } = {
+${i}    routing: {
+${i}      channel_type: null,
+${i}      platform_id: null,
+${i}      thread_id: ${tid},
+${i}    },
+${i}  };
+${i}  try {
+${i}    const { openInboundDb } = await import('./session-manager.js');
+${i}    const db = openInboundDb(${ag}, ${sid});
+${i}    try {
+${i}      const row = db
+${i}        .prepare(
+${i}          'SELECT channel_type, platform_id, thread_id FROM session_routing WHERE id = 1',
+${i}        )
+${i}        .get() as
+${i}        | {
+${i}            channel_type: string | null;
+${i}            platform_id: string | null;
+${i}            thread_id: string | null;
+${i}          }
+${i}        | undefined;
+${i}      if (row) meta.routing = row;
+${i}      meta.destinations = db
+${i}        .prepare(
+${i}          'SELECT name, display_name, type, channel_type, platform_id, agent_group_id FROM destinations ORDER BY name',
+${i}        )
+${i}        .all() as NonNullable<typeof meta.destinations>;
+${i}    } finally {
+${i}      db.close();
+${i}    }
+${i}  } catch {
+${i}    // Session DB may not exist yet; still sync thread_id from the Session row.
+${i}  }
+${i}  void transport.syncSessionMeta?.(
+${i}    { agentGroupId: ${ag}, sessionId: ${sid} },
+${i}    meta,
+${i}  );
+${i}}`;
+}
+
 function replaceOnce(content: string, search: string, replacement: string, label: string): string {
   const first = content.indexOf(search);
   if (first < 0) throw new Error(`Could not find ${label} anchor`);
@@ -491,65 +565,12 @@ export function patchContainerRunner(source: string): string {
       marked(
         'container-runner-meta',
         `  writeSessionRouting(agentGroup.id, session.id);
-  {
-    const transport = resolveSessionTransport({
-      agentGroupId: agentGroup.id,
-      sessionId: session.id,
-    });
-    // Project host routing/destinations into the HTTP mailbox store (not {}).
-    let meta: {
-      routing: {
-        channel_type: string | null;
-        platform_id: string | null;
-        thread_id: string | null;
-      };
-      destinations?: Array<{
-        name: string;
-        display_name: string | null;
-        type: 'channel' | 'agent';
-        channel_type: string | null;
-        platform_id: string | null;
-        agent_group_id: string | null;
-      }>;
-    } = {
-      routing: {
-        channel_type: null,
-        platform_id: null,
-        thread_id: session.thread_id ?? null,
-      },
-    };
-    try {
-      const { openInboundDb } = await import('./session-manager.js');
-      const db = openInboundDb(agentGroup.id, session.id);
-      try {
-        const row = db
-          .prepare(
-            'SELECT channel_type, platform_id, thread_id FROM session_routing WHERE id = 1',
-          )
-          .get() as
-          | {
-              channel_type: string | null;
-              platform_id: string | null;
-              thread_id: string | null;
-            }
-          | undefined;
-        if (row) meta.routing = row;
-        meta.destinations = db
-          .prepare(
-            'SELECT name, display_name, type, channel_type, platform_id, agent_group_id FROM destinations ORDER BY name',
-          )
-          .all() as NonNullable<typeof meta.destinations>;
-      } finally {
-        db.close();
-      }
-    } catch {
-      // Session DB may not exist yet; still sync thread_id from the Session row.
-    }
-    void transport.syncSessionMeta?.(
-      { agentGroupId: agentGroup.id, sessionId: session.id },
-      meta,
-    );
-  }`,
+${buildSyncSessionMetaBlock({
+  indent: '  ',
+  agentGroupIdExpr: 'agentGroup.id',
+  sessionIdExpr: 'session.id',
+  threadIdExpr: 'session.thread_id ?? null',
+})}`,
       ),
       'container-runner writeSessionRouting',
     );
@@ -565,64 +586,12 @@ export function patchContainerRunner(source: string): string {
       wakeMetaSlot,
       marked(
         'wake-prepare-meta',
-        `    {
-      const transport = resolveSessionTransport({
-        agentGroupId: session.agent_group_id,
-        sessionId: session.id,
-      });
-      let meta: {
-        routing: {
-          channel_type: string | null;
-          platform_id: string | null;
-          thread_id: string | null;
-        };
-        destinations?: Array<{
-          name: string;
-          display_name: string | null;
-          type: 'channel' | 'agent';
-          channel_type: string | null;
-          platform_id: string | null;
-          agent_group_id: string | null;
-        }>;
-      } = {
-        routing: {
-          channel_type: null,
-          platform_id: null,
-          thread_id: session.thread_id ?? null,
-        },
-      };
-      try {
-        const { openInboundDb } = await import('./session-manager.js');
-        const db = openInboundDb(session.agent_group_id, session.id);
-        try {
-          const row = db
-            .prepare(
-              'SELECT channel_type, platform_id, thread_id FROM session_routing WHERE id = 1',
-            )
-            .get() as
-            | {
-                channel_type: string | null;
-                platform_id: string | null;
-                thread_id: string | null;
-              }
-            | undefined;
-          if (row) meta.routing = row;
-          meta.destinations = db
-            .prepare(
-              'SELECT name, display_name, type, channel_type, platform_id, agent_group_id FROM destinations ORDER BY name',
-            )
-            .all() as NonNullable<typeof meta.destinations>;
-        } finally {
-          db.close();
-        }
-      } catch {
-        // Session DB may not exist yet; still sync thread_id from the Session row.
-      }
-      void transport.syncSessionMeta?.(
-        { agentGroupId: session.agent_group_id, sessionId: session.id },
-        meta,
-      );
-    }`,
+        buildSyncSessionMetaBlock({
+          indent: '    ',
+          agentGroupIdExpr: 'session.agent_group_id',
+          sessionIdExpr: 'session.id',
+          threadIdExpr: 'session.thread_id ?? null',
+        }),
       ),
       'container-runner wake-prepare-meta',
     );
