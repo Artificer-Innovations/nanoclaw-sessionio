@@ -28,6 +28,8 @@ export class HostMailboxStore {
   private inbox = new Map<string, Map<string, Attachment[]>>();
   private outbox = new Map<string, Map<string, Attachment[]>>();
   private meta = new Map<string, SessionMeta>();
+  /** messageId → platform message id recorded at ack (edit/reply/dedup correlation). */
+  private platformMessageIds = new Map<string, Map<string, string | null>>();
   /** Last enqueue/poll/ack/heartbeat/meta touch — used by stale-session sweep. */
   private lastActivity = new Map<string, number>();
 
@@ -47,6 +49,7 @@ export class HostMailboxStore {
     this.inbox.delete(k);
     this.outbox.delete(k);
     this.meta.delete(k);
+    this.platformMessageIds.delete(k);
     this.lastActivity.delete(k);
   }
 
@@ -107,8 +110,15 @@ export class HostMailboxStore {
     return [...(this.outbound.get(k) ?? [])];
   }
 
-  /** Remove outbound messages once the host has delivered them (splice-on-ack). */
-  ackDelivered(session: SessionRef, messageIds: string[]): void {
+  /**
+   * Remove outbound messages once the host has delivered them (splice-on-ack).
+   * Optionally records platform message ids (same contract as filesystem `markDelivered`).
+   */
+  ackDelivered(
+    session: SessionRef,
+    messageIds: string[],
+    platformMessageIds?: Array<string | null>,
+  ): void {
     const k = this.key(session);
     if (messageIds.length === 0) {
       this.touch(k);
@@ -119,7 +129,16 @@ export class HostMailboxStore {
       k,
       (this.outbound.get(k) ?? []).filter((m) => !remove.has(m.id)),
     );
+    const recorded = this.platformMessageIds.get(k) ?? new Map();
+    messageIds.forEach((id, index) => {
+      recorded.set(id, platformMessageIds?.[index] ?? null);
+    });
+    this.platformMessageIds.set(k, recorded);
     this.touch(k);
+  }
+
+  getPlatformMessageId(session: SessionRef, messageId: string): string | null | undefined {
+    return this.platformMessageIds.get(this.key(session))?.get(messageId);
   }
 
   setProcessingAcks(session: SessionRef, acks: ProcessingAck[]): void {
@@ -218,6 +237,7 @@ export class HostMailboxStore {
     this.inbox.clear();
     this.outbox.clear();
     this.meta.clear();
+    this.platformMessageIds.clear();
     this.lastActivity.clear();
   }
 }
@@ -293,8 +313,8 @@ export function createHttpTransport(
     pollOutbound(session) {
       return store.pollOutbound(session);
     },
-    ackDelivered(session, messageIds) {
-      store.ackDelivered(session, messageIds);
+    ackDelivered(session, messageIds, platformMessageIds) {
+      store.ackDelivered(session, messageIds, platformMessageIds);
     },
     getProcessingAcks(session) {
       return store.getProcessingAcks(session);

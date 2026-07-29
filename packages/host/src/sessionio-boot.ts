@@ -16,6 +16,7 @@ import {
   globalHostMailboxStore,
 } from './transports.js';
 import type { Attachment, InboundMessage, SessionMeta, SessionRef } from './types.js';
+import { warnOnce } from './warn-once.js';
 
 import {
   clearOutbox,
@@ -73,7 +74,12 @@ function createNanoclawFilesystemDeps() {
           outDb.close();
           inDb.close();
         }
-      } catch {
+      } catch (error) {
+        warnOnce(
+          `fs-pollOutbound:${session.agentGroupId}/${session.sessionId}`,
+          'filesystem pollOutbound failed; treating as no due outbound',
+          error,
+        );
         return [];
       }
     },
@@ -106,7 +112,12 @@ function createNanoclawFilesystemDeps() {
           outDb.close();
           inDb.close();
         }
-      } catch {
+      } catch (error) {
+        warnOnce(
+          `fs-getProcessingAcks:${session.agentGroupId}/${session.sessionId}`,
+          'filesystem getProcessingAcks failed; treating as no acks',
+          error,
+        );
         return [];
       }
     },
@@ -171,7 +182,12 @@ function createNanoclawFilesystemDeps() {
         } finally {
           inDb.close();
         }
-      } catch {
+      } catch (error) {
+        warnOnce(
+          `fs-countDueInbound:${session.agentGroupId}/${session.sessionId}`,
+          'filesystem countDueInbound failed; treating as zero due',
+          error,
+        );
         return 0;
       }
     },

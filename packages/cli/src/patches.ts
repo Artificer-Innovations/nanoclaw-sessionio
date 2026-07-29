@@ -229,18 +229,23 @@ const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Pr
   );
   if (undelivered.length === 0) return;
 
-  let inDb: Database.Database | null = null;
+  let inDb: Database.Database;
   try {
     inDb = openInboundDb(agentGroup.id, session.id);
     migrateDeliveredTable(inDb);
-  } catch {
-    inDb = null;
+  } catch (err) {
+    // Match stock: without inbound DB we cannot deliver or record failures.
+    log.warn('drainSession: inbound DB unavailable, deferring delivery', {
+      sessionId: session.id,
+      err,
+    });
+    return;
   }
 
   try {
     for (const msg of undelivered) {
       try {
-        const platformMsgId = await deliverMessage(msg, session, inDb as Database.Database);
+        const platformMsgId = await deliverMessage(msg, session, inDb);
         await Promise.resolve(
           transport.ackDelivered(
             { agentGroupId: agentGroup.id, sessionId: session.id },
@@ -263,7 +268,7 @@ const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Pr
             attempts,
             err,
           });
-          if (inDb) markDeliveryFailed(inDb, msg.id);
+          markDeliveryFailed(inDb, msg.id);
           deliveryAttempts.delete(msg.id);
         } else {
           log.warn('Message delivery failed, will retry', {
@@ -277,16 +282,24 @@ const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Pr
       }
     }
   } finally {
-    inDb?.close();
+    inDb.close();
   }
 }`;
 
 export function patchDelivery(source: string): string {
   const names = ['delivery-import', 'delivery-drain'];
-  if (isFullyPatched(source, names)) return source;
+  let content = source;
+  // Upgrade prior patch that continued with inDb=null / type-asserted deliverMessage.
+  if (
+    content.includes(begin('delivery-drain')) &&
+    (content.includes('inDb as Database.Database') || content.includes('inDb?.close()'))
+  ) {
+    content = uninstallDelivery(content);
+  }
+  if (isFullyPatched(content, names)) return content;
 
-  let content = installImport(
-    source,
+  content = installImport(
+    content,
     './sessionio.js',
     ['resolveSessionTransport'],
     'delivery-import',
@@ -454,6 +467,23 @@ export function patchContainerRunner(source: string): string {
     );
   }
 
+  if (
+    content.includes(begin('container-runner-meta')) &&
+    content.includes('void transport.syncSessionMeta?.(') &&
+    content.includes('{},\n    );')
+  ) {
+    content = uninstallMarks(content, ['container-runner-meta']);
+    // Marker wrapped writeSessionRouting — restore the stock call if removed.
+    if (!content.includes('writeSessionRouting(agentGroup.id, session.id);')) {
+      if (content.includes(spawnLog)) {
+        content = content.replace(
+          spawnLog,
+          `  writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
+        );
+      }
+    }
+  }
+
   if (!content.includes(begin('container-runner-meta'))) {
     content = replaceOnce(
       content,
@@ -466,9 +496,58 @@ export function patchContainerRunner(source: string): string {
       agentGroupId: agentGroup.id,
       sessionId: session.id,
     });
+    // Project host routing/destinations into the HTTP mailbox store (not {}).
+    let meta: {
+      routing: {
+        channel_type: string | null;
+        platform_id: string | null;
+        thread_id: string | null;
+      };
+      destinations?: Array<{
+        name: string;
+        display_name: string | null;
+        type: 'channel' | 'agent';
+        channel_type: string | null;
+        platform_id: string | null;
+        agent_group_id: string | null;
+      }>;
+    } = {
+      routing: {
+        channel_type: null,
+        platform_id: null,
+        thread_id: session.thread_id ?? null,
+      },
+    };
+    try {
+      const { openInboundDb } = await import('./session-manager.js');
+      const db = openInboundDb(agentGroup.id, session.id);
+      try {
+        const row = db
+          .prepare(
+            'SELECT channel_type, platform_id, thread_id FROM session_routing WHERE id = 1',
+          )
+          .get() as
+          | {
+              channel_type: string | null;
+              platform_id: string | null;
+              thread_id: string | null;
+            }
+          | undefined;
+        if (row) meta.routing = row;
+        meta.destinations = db
+          .prepare(
+            'SELECT name, display_name, type, channel_type, platform_id, agent_group_id FROM destinations ORDER BY name',
+          )
+          .all() as NonNullable<typeof meta.destinations>;
+      } finally {
+        db.close();
+      }
+    } catch {
+      // Session DB may not exist yet; still sync thread_id from the Session row.
+    }
     void transport.syncSessionMeta?.(
       { agentGroupId: agentGroup.id, sessionId: session.id },
-      {},
+      meta,
     );
   }`,
       ),
@@ -567,11 +646,14 @@ export function uninstallRunnerIndex(source: string): string {
 export function patchPollLoop(source: string): string {
   let content = source;
   // Upgrade stub that only declared __sessionioPeer without wiring IO,
-  // or that eagerly captured the peer before registerSessionioRunner().
+  // or that eagerly captured the peer before registerSessionioRunner(),
+  // or that lacked stageOutbox/getMeta wiring.
   if (
     content.includes(begin('poll-loop-peer')) &&
     (!content.includes('sessionioGetPendingMessages') ||
-      content.includes('const __sessionioPeer = getSessionioPeer()'))
+      content.includes('const __sessionioPeer = getSessionioPeer()') ||
+      !content.includes('stageOutbox') ||
+      !content.includes('getMeta'))
   ) {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
@@ -588,7 +670,11 @@ export function patchPollLoop(source: string): string {
   }
 
   const names = ['poll-loop-peer'];
-  if (isFullyPatched(content, names) && content.includes('sessionioGetPendingMessages')) {
+  if (
+    isFullyPatched(content, names) &&
+    content.includes('sessionioGetPendingMessages') &&
+    content.includes('stageOutbox')
+  ) {
     return content;
   }
 
@@ -596,6 +682,8 @@ export function patchPollLoop(source: string): string {
     const firstImport = content.search(/^import /m);
     if (firstImport < 0) throw new Error('Could not find import anchor for poll-loop-peer-import');
     const block = `${begin('poll-loop-peer-import')}
+import fs from 'node:fs';
+import path from 'node:path';
 import { getSessionioPeer } from './sessionio/register.js';
 import { inboundWireToRow, sessionRefFromEnv, writeToOutboundWire } from './sessionio/mailbox.js';
 import { getConfig } from './config.js';
@@ -617,10 +705,83 @@ function sessionioPeer() {
   return getSessionioPeer();
 }
 
+async function sessionioApplyHostMeta(
+  peer: NonNullable<ReturnType<typeof getSessionioPeer>>,
+  session: ReturnType<typeof sessionRefFromEnv>,
+) {
+  const meta = await peer.getMeta(session);
+  try {
+    const { getInboundDb } = await import('./db/connection.js');
+    const db = getInboundDb();
+    if (meta.routing) {
+      db.prepare(
+        \`INSERT INTO session_routing (id, channel_type, platform_id, thread_id)
+         VALUES (1, @channel_type, @platform_id, @thread_id)
+         ON CONFLICT(id) DO UPDATE SET
+           channel_type = excluded.channel_type,
+           platform_id = excluded.platform_id,
+           thread_id = excluded.thread_id\`,
+      ).run(meta.routing);
+    }
+    if (meta.destinations) {
+      const tx = db.transaction((rows: NonNullable<typeof meta.destinations>) => {
+        db.prepare('DELETE FROM destinations').run();
+        const stmt = db.prepare(
+          \`INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+           VALUES (@name, @display_name, @type, @channel_type, @platform_id, @agent_group_id)\`,
+        );
+        for (const row of rows) stmt.run(row);
+      });
+      tx(meta.destinations);
+    }
+  } catch {
+    // Local SQLite projection is best-effort (shared mount may already have routing).
+  }
+}
+
+async function sessionioStageOutboxFiles(
+  peer: NonNullable<ReturnType<typeof getSessionioPeer>>,
+  session: ReturnType<typeof sessionRefFromEnv>,
+  msg: { id: string; content: string },
+) {
+  let filenames: string[] = [];
+  try {
+    const parsed = JSON.parse(msg.content) as { files?: unknown };
+    if (Array.isArray(parsed.files)) {
+      filenames = parsed.files.filter((f): f is string => typeof f === 'string');
+    }
+  } catch {
+    return;
+  }
+  if (filenames.length === 0) return;
+  const outboxDir = path.join('/workspace/outbox', msg.id);
+  const files: Array<{ name: string; data: string }> = [];
+  for (const name of filenames) {
+    const filePath = path.join(outboxDir, name);
+    try {
+      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+        files.push({ name, data: fs.readFileSync(filePath).toString('base64') });
+      }
+    } catch {
+      // skip unreadable attachment
+    }
+  }
+  if (files.length > 0) {
+    await peer.stageOutbox(session, msg.id, files);
+  }
+}
+
 async function sessionioGetPendingMessages(isFirstPoll = false) {
   const peer = sessionioPeer();
   if (!peer) return getPendingMessages(isFirstPoll);
   const session = sessionRefFromEnv(process.env, getConfig().agentGroupId);
+  if (isFirstPoll) {
+    try {
+      await sessionioApplyHostMeta(peer, session);
+    } catch {
+      // Meta refresh must not block inbound poll.
+    }
+  }
   const limit = getConfig().maxMessagesPerPrompt;
   const messages = await peer.pollInbound(session, { limit, isFirstPoll });
   return messages.map(inboundWireToRow);
@@ -629,10 +790,9 @@ async function sessionioGetPendingMessages(isFirstPoll = false) {
 async function sessionioWriteMessageOut(msg: Parameters<typeof writeMessageOut>[0]) {
   const peer = sessionioPeer();
   if (!peer) return writeMessageOut(msg);
-  await peer.postOutbound(
-    sessionRefFromEnv(process.env, getConfig().agentGroupId),
-    writeToOutboundWire(msg),
-  );
+  const session = sessionRefFromEnv(process.env, getConfig().agentGroupId);
+  await peer.postOutbound(session, writeToOutboundWire(msg));
+  await sessionioStageOutboxFiles(peer, session, msg);
   return 0;
 }
 
@@ -803,6 +963,32 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
     const err = proc.stderr.toString().trim();
     throw new Error(\`sessionio postOutbound failed: http=\${code} exit=\${proc.exitCode} \${err}\`);
   }
+  // Stage outbox attachments onto the HTTP mailbox (no shared mount required).
+  try {
+    const parsed = JSON.parse(msg.content) as { files?: unknown };
+    const filenames = Array.isArray(parsed.files)
+      ? parsed.files.filter((f): f is string => typeof f === 'string')
+      : [];
+    if (filenames.length > 0) {
+      const fsSync = require('node:fs') as typeof import('node:fs');
+      const files: Array<{ name: string; data: string }> = [];
+      for (const name of filenames) {
+        const filePath = \`/workspace/outbox/\${msg.id}/\${name}\`;
+        try {
+          if (fsSync.existsSync(filePath) && fsSync.statSync(filePath).isFile()) {
+            files.push({ name, data: fsSync.readFileSync(filePath).toString('base64') });
+          }
+        } catch {
+          // skip missing attachment
+        }
+      }
+      if (files.length > 0) {
+        void peer.stageOutbox(session, msg.id, files);
+      }
+    }
+  } catch {
+    // Attachment staging is best-effort on the sync curl bridge.
+  }
   return 0;
 }
 `;
@@ -810,13 +996,21 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
 /** Route writeMessageOut through HTTP peer for MCP/agenttrace sync call sites. */
 export function patchMessagesOut(source: string): string {
   const names = ['messages-out-import', 'messages-out-helper', 'messages-out-peer'];
-  if (isFullyPatched(source, names) && source.includes('buildOutboundSyncCurlArgs')) {
+  if (
+    isFullyPatched(source, names) &&
+    source.includes('buildOutboundSyncCurlArgs') &&
+    source.includes('stageOutbox')
+  ) {
     return source;
   }
 
-  // Upgrade marked helpers that still inline curl argv (pre-outbound-sync helper).
+  // Upgrade marked helpers that still inline curl argv (pre-outbound-sync helper),
+  // or that post outbound without staging outbox attachments.
   let content = source;
-  if (isFullyPatched(content, names) && !content.includes('buildOutboundSyncCurlArgs')) {
+  if (
+    isFullyPatched(content, names) &&
+    (!content.includes('buildOutboundSyncCurlArgs') || !content.includes('stageOutbox'))
+  ) {
     content = uninstallMessagesOut(content);
   }
 

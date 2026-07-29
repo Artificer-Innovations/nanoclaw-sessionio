@@ -201,8 +201,11 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
       }
 
       if (req.method === 'POST' && pathname === '/outbound/ack') {
-        const body = JSON.parse(await readBody(req, maxBodyBytes)) as { messageIds?: string[] };
-        store.ackDelivered(session, body.messageIds ?? []);
+        const body = JSON.parse(await readBody(req, maxBodyBytes)) as {
+          messageIds?: string[];
+          platformMessageIds?: Array<string | null>;
+        };
+        store.ackDelivered(session, body.messageIds ?? [], body.platformMessageIds);
         sendNoContent(res);
         return;
       }

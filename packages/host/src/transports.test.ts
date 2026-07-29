@@ -70,6 +70,19 @@ describe('HostMailboxStore', () => {
     store.ackDelivered(session, ['o1']);
     expect(store.pollOutbound(session)).toHaveLength(0);
     store.ackDelivered(session, []);
+    store.enqueueOutbound(session, {
+      id: 'plat',
+      kind: 'chat',
+      timestamp: new Date().toISOString(),
+      platform_id: null,
+      channel_type: null,
+      thread_id: null,
+      content: '{}',
+      in_reply_to: null,
+    });
+    store.ackDelivered(session, ['plat'], ['slack-99']);
+    expect(store.getPlatformMessageId(session, 'plat')).toBe('slack-99');
+    expect(store.pollOutbound(session)).toEqual([]);
 
     store.setProcessingAcks(session, [{ message_id: 'a', status: 'processing', claimed_at: 't1' }]);
     store.setProcessingAcks(session, [

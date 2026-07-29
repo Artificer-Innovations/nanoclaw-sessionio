@@ -95,10 +95,28 @@ describe('patches', () => {
     const patched = patchDelivery(STOCK_DELIVERY);
     expect(patched).toContain('resolveSessionTransport');
     expect(patched).toContain('@nanoclaw-sessionio:delivery-drain:begin');
+    expect(patched).toContain('inbound DB unavailable');
+    expect(patched).not.toContain('inDb as Database.Database');
     expect(patchDelivery(patched)).toBe(patched);
     const restored = uninstallDelivery(patched);
     expect(restored).toContain('outDb.close()');
     expect(restored).not.toContain('@nanoclaw-sessionio:delivery-drain:begin');
+  });
+
+  it('upgrades stale delivery drain that continued with inDb=null', () => {
+    const good = patchDelivery(STOCK_DELIVERY);
+    const stale = good
+      .replace('inbound DB unavailable, deferring delivery', 'legacy null path')
+      .replace('let inDb: Database.Database;', 'let inDb: Database.Database | null = null;')
+      .replace(
+        'const platformMsgId = await deliverMessage(msg, session, inDb);',
+        'const platformMsgId = await deliverMessage(msg, session, inDb as Database.Database);',
+      )
+      .replace('inDb.close();', 'inDb?.close();');
+    expect(stale).toContain('inDb as Database.Database');
+    const upgraded = patchDelivery(stale);
+    expect(upgraded).toContain('inbound DB unavailable');
+    expect(upgraded).not.toContain('inDb as Database.Database');
   });
 
   it('patches host-sweep and index', () => {

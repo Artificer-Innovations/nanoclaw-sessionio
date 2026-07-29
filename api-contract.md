@@ -62,6 +62,10 @@ E2E note: a test plan step of “restart host, send a webchat message” is safe
 
 Outbound delivery uses splice-on-ack; idle session maps are swept by last-activity age so a long-lived host does not retain unbounded per-session memory.
 
+**Inbound under http is at-most-once:** `GET /inbound` (`takeInbound`) removes messages from the host store as soon as they are read — there is no separate reclaim/ack step matching outbound’s poll/ack split. If the runner crashes after take (or the HTTP response is lost), those inbound messages are not redelivered while the host stays up. Prefer idempotent agent handling; a future ack/reclaim step may tighten this.
+
+`POST /outbound/ack` accepts `{ messageIds, platformMessageIds? }` so http/loopback records the same platform-message-id correlation as filesystem `markDelivered`.
+
 ## HTTP peer protocol (host source of truth)
 
 Base URL from `SESSIONIO_BASE_URL`. Optional `Authorization: Bearer $SESSIONIO_HTTP_TOKEN`.

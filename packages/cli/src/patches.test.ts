@@ -79,9 +79,28 @@ describe('remaining patches', () => {
     expect(patched).toContain('injectSessionioContainerEnv');
     expect(patched).toContain("from './sessionio-docker-env.js'");
     expect(patched).toContain('syncSessionMeta');
+    expect(patched).toContain('session_routing');
+    expect(patched).not.toContain(
+      'syncSessionMeta?.(\n      { agentGroupId: agentGroup.id, sessionId: session.id },\n      {},\n    )',
+    );
     expect(uninstallContainerRunner(patched)).not.toContain(
       '@nanoclaw-sessionio:container-runner-meta:begin',
     );
+  });
+
+  it('upgrades stale container-runner-meta that synced empty {}', () => {
+    const good = patchContainerRunner(STOCK_CONTAINER_RUNNER);
+    const stale = good.replace(
+      /void transport\.syncSessionMeta\?\.\([\s\S]*?\n\s*\);/,
+      `void transport.syncSessionMeta?.(
+      { agentGroupId: agentGroup.id, sessionId: session.id },
+      {},
+    );`,
+    );
+    expect(stale).toContain('{},\n    );');
+    const upgraded = patchContainerRunner(stale);
+    expect(upgraded).toContain('session_routing');
+    expect(upgraded).not.toContain('{},\n    );');
   });
 
   it('upgrades stale append-style container-runner env blocks', () => {
@@ -106,6 +125,8 @@ describe('remaining patches', () => {
     expect(poll).not.toContain('const __sessionioPeer = getSessionioPeer()');
     expect(poll).toContain('await sessionioGetPendingMessages(');
     expect(poll).toContain('await sessionioWriteMessageOut(');
+    expect(poll).toContain('stageOutbox');
+    expect(poll).toContain('getMeta');
     expect(patchPollLoop(poll)).toBe(poll);
     expect(uninstallPollLoop(poll)).not.toContain('@nanoclaw-sessionio:poll-loop-peer:begin');
   });
@@ -191,6 +212,16 @@ export async function wakeContainer(agentGroup: { id: string; name: string }, se
     const upgraded = patchMessagesOut(stale);
     expect(upgraded).toContain('buildOutboundSyncCurlArgs');
     expect(upgraded).toContain('clearedProxyEnv');
+  });
+
+  it('upgrades marked messages-out that posts without stageOutbox', () => {
+    const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
+    expect(patched).toContain('stageOutbox');
+    const stale = patched.replaceAll('stageOutbox', 'legacyStage');
+    expect(stale).toContain('buildOutboundSyncCurlArgs');
+    expect(stale).not.toContain('stageOutbox');
+    const upgraded = patchMessagesOut(stale);
+    expect(upgraded).toContain('stageOutbox');
   });
 
   it('leaves unmarked sandbox peer bridge alone when already using outbound-sync', () => {

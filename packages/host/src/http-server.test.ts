@@ -124,8 +124,9 @@ describe('sessionio http server routes', () => {
     await fetch(`${baseUrl}/outbound/ack?${qs}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ messageIds: ['out1'] }),
+      body: JSON.stringify({ messageIds: ['out1'], platformMessageIds: ['plat-1'] }),
     });
+    expect(store.getPlatformMessageId(session, 'out1')).toBe('plat-1');
 
     await fetch(`${baseUrl}/acks?${qs}`, {
       method: 'POST',
