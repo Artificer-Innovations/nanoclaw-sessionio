@@ -88,6 +88,22 @@ describe('remaining patches', () => {
     );
   });
 
+  it('fills agenthosts wake-prepare-meta-slot with syncSessionMeta', () => {
+    const patched = patchContainerRunner(STOCK_CONTAINER_RUNNER);
+    expect(patched).toContain('@nanoclaw-sessionio:wake-prepare-meta:begin');
+    expect(patched).toContain('agentGroupId: session.agent_group_id');
+    expect(patched).toContain('sessionId: session.id');
+    expect(patched).toMatch(
+      /wake-prepare-meta:begin[\s\S]*syncSessionMeta\?\.\([\s\S]*wake-prepare-meta:end/,
+    );
+    expect(patched).not.toContain('wake-prepare-meta-slot');
+    expect(patchContainerRunner(patched)).toBe(patched);
+
+    const uninstalled = uninstallContainerRunner(patched);
+    expect(uninstalled).toContain('// @nanoclaw-sessionio:wake-prepare-meta-slot');
+    expect(uninstalled).not.toContain('@nanoclaw-sessionio:wake-prepare-meta:begin');
+  });
+
   it('upgrades stale container-runner-meta that synced empty {}', () => {
     const good = patchContainerRunner(STOCK_CONTAINER_RUNNER);
     const stale = good.replace(

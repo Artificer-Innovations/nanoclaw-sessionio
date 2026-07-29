@@ -160,7 +160,7 @@ async function deliverMessage(
 
 export const STOCK_CONTAINER_RUNNER = `import { writeSessionRouting } from './session-manager.js';
 
-export async function wakeContainer(agentGroup: { id: string; name: string }, session: { id: string }, containerName: string): Promise<void> {
+export async function wakeContainer(agentGroup: { id: string; name: string }, session: { id: string; agent_group_id?: string; thread_id?: string | null }, containerName: string): Promise<void> {
   if (false) {
     const { writeDestinations } = await import('./modules/agent-to-agent/write-destinations.js');
     writeDestinations(agentGroup.id, session.id);
@@ -169,6 +169,13 @@ export async function wakeContainer(agentGroup: { id: string; name: string }, se
 
   const args: string[] = [];
   log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
+}
+
+/** Shape after agenthosts public-exports: slot for sessionio wake meta sync. */
+export async function wakeContainerFromAgenthosts(session: { id: string; agent_group_id: string; thread_id?: string | null }): Promise<boolean> {
+  writeSessionRouting(session.agent_group_id, session.id);
+    // @nanoclaw-sessionio:wake-prepare-meta-slot
+  return true;
 }
 
 const log = { info: (..._a: unknown[]) => undefined };

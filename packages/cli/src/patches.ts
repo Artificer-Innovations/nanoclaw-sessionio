@@ -556,15 +556,13 @@ export function patchContainerRunner(source: string): string {
   }
 
   // Process/other runtimes skip spawnContainer — project mailbox meta on every wake.
-  const wakeMetaAnchor =
-    '    // @nanoclaw-sessionio:wake-prepare-meta:begin\n    // @nanoclaw-sessionio:wake-prepare-meta:end';
-  if (
-    content.includes(wakeMetaAnchor) &&
-    !content.includes(begin('wake-prepare-meta'))
-  ) {
+  // Slot comment is owned by agenthosts (must not use :begin/:end or the install
+  // guard would see the empty slot as already installed and skip injection).
+  const wakeMetaSlot = '    // @nanoclaw-sessionio:wake-prepare-meta-slot';
+  if (content.includes(wakeMetaSlot) && !content.includes(begin('wake-prepare-meta'))) {
     content = replaceOnce(
       content,
-      wakeMetaAnchor,
+      wakeMetaSlot,
       marked(
         'wake-prepare-meta',
         `    {
@@ -660,13 +658,23 @@ export function patchContainerRunner(source: string): string {
 }
 
 export function uninstallContainerRunner(source: string): string {
-  return uninstallMarks(source, [
+  let next = uninstallMarks(source, [
     'container-runner-env',
     'container-runner-meta',
-    'wake-prepare-meta',
     'container-runner-docker-env-import',
     'container-runner-import',
   ]);
+  // Restore the agenthosts-owned slot so a later sessionio install can re-inject.
+  if (next.includes(begin('wake-prepare-meta'))) {
+    next = next.replace(
+      new RegExp(
+        `^[ \\t]*${escapeRegExp(begin('wake-prepare-meta'))}\\r?\\n[\\s\\S]*?^[ \\t]*${escapeRegExp(end('wake-prepare-meta'))}\\r?\\n?`,
+        'm',
+      ),
+      '    // @nanoclaw-sessionio:wake-prepare-meta-slot\n',
+    );
+  }
+  return next;
 }
 
 export function patchIndex(source: string): string {
