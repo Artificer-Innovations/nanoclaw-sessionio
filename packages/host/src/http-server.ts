@@ -167,6 +167,24 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
         return;
       }
 
+      // Session routes only — unknown paths must 404 before parseSession,
+      // otherwise missing query params would mask them as 400.
+      const sessionPaths = new Set([
+        '/inbound',
+        '/outbound',
+        '/outbound/ack',
+        '/acks',
+        '/heartbeat',
+        '/liveness',
+        '/inbox',
+        '/outbox',
+        '/meta',
+      ]);
+      if (!sessionPaths.has(pathname)) {
+        sendJson(res, 404, { error: 'not_found' });
+        return;
+      }
+
       const session = parseSession(url);
 
       if (req.method === 'POST' && pathname === '/inbound') {
@@ -277,6 +295,7 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
         return;
       }
 
+      // Known path but wrong method (e.g. PUT /inbound).
       sendJson(res, 404, { error: 'not_found' });
     } catch (error) {
       const status = error instanceof RequestBodyTooLargeError ? 413 : 400;
