@@ -1,12 +1,23 @@
 # nanoclaw-sessionio
 
-Pluggable **host↔agent mailbox** for NanoClaw. Replaces the hard-coded assumption that session IO is shared local SQLite + filesystem inbox/outbox, while keeping message semantics intact.
+Pluggable **host↔agent mailbox** for NanoClaw. Stock NanoClaw assumes the host and agent share a local filesystem (SQLite session DBs, inbox/outbox mounts). This package keeps the same message semantics while making that assumption optional.
+
+**Why it exists:** so the NanoClaw **host** and the **agent runner** do not have to live on the same machine—or even share a disk.
+
+With the HTTP mailbox transport, the host owns the queues and exposes them over the network; the agent dials in. That unlocks setups like:
+
+- Host on a workstation or always-on box; agents on a separate server, VM, or container host
+- Multiple agent machines talking to one host mailbox
+- Agents behind a different network namespace (remote Docker/Kubernetes, LAN boxes, a cloud VM) where bind-mounting `data/v2-sessions` is impossible or undesirable
+- Local development that mirrors remote topology (HTTP over `host.docker.internal` / loopback) before you deploy split host/agent
+
+Default install stays on the **filesystem** transport (zero behavior change). Switch to **http** when the agent cannot see the host’s session directories.
 
 | Transport | Role |
 | --- | --- |
-| **filesystem** (default) | Zero behavior change — shared session dirs / SQLite |
-| **http** | Host HTTP mailbox; agent peers over HTTP (remote agents, no shared mounts) |
-| **loopback** | Alias for **http** (same protocol/store). Convenient name for local Docker→host tests |
+| **filesystem** (default) | Shared session dirs / SQLite — same machine, mounts available |
+| **http** | Host HTTP mailbox; agent peers over HTTP — no shared mounts |
+| **loopback** | Alias for **http** (same protocol). Handy name for local Docker→host tests |
 
 Delivery model matches `nanoclaw-hosthooks`: npm package + skill installer that patches your NanoClaw fork. Not an upstream core PR.
 
