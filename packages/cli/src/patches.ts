@@ -555,6 +555,81 @@ export function patchContainerRunner(source: string): string {
     );
   }
 
+  // Process/other runtimes skip spawnContainer — project mailbox meta on every wake.
+  const wakeMetaAnchor =
+    '    // @nanoclaw-sessionio:wake-prepare-meta:begin\n    // @nanoclaw-sessionio:wake-prepare-meta:end';
+  if (
+    content.includes(wakeMetaAnchor) &&
+    !content.includes(begin('wake-prepare-meta'))
+  ) {
+    content = replaceOnce(
+      content,
+      wakeMetaAnchor,
+      marked(
+        'wake-prepare-meta',
+        `    {
+      const transport = resolveSessionTransport({
+        agentGroupId: session.agent_group_id,
+        sessionId: session.id,
+      });
+      let meta: {
+        routing: {
+          channel_type: string | null;
+          platform_id: string | null;
+          thread_id: string | null;
+        };
+        destinations?: Array<{
+          name: string;
+          display_name: string | null;
+          type: 'channel' | 'agent';
+          channel_type: string | null;
+          platform_id: string | null;
+          agent_group_id: string | null;
+        }>;
+      } = {
+        routing: {
+          channel_type: null,
+          platform_id: null,
+          thread_id: session.thread_id ?? null,
+        },
+      };
+      try {
+        const { openInboundDb } = await import('./session-manager.js');
+        const db = openInboundDb(session.agent_group_id, session.id);
+        try {
+          const row = db
+            .prepare(
+              'SELECT channel_type, platform_id, thread_id FROM session_routing WHERE id = 1',
+            )
+            .get() as
+            | {
+                channel_type: string | null;
+                platform_id: string | null;
+                thread_id: string | null;
+              }
+            | undefined;
+          if (row) meta.routing = row;
+          meta.destinations = db
+            .prepare(
+              'SELECT name, display_name, type, channel_type, platform_id, agent_group_id FROM destinations ORDER BY name',
+            )
+            .all() as NonNullable<typeof meta.destinations>;
+        } finally {
+          db.close();
+        }
+      } catch {
+        // Session DB may not exist yet; still sync thread_id from the Session row.
+      }
+      void transport.syncSessionMeta?.(
+        { agentGroupId: session.agent_group_id, sessionId: session.id },
+        meta,
+      );
+    }`,
+      ),
+      'container-runner wake-prepare-meta',
+    );
+  }
+
   // Inject SESSIONIO_* into docker args so the agent peer can reach the host mailbox.
   // Keep the spawn log OUTSIDE the marker so uninstall cannot eat it again.
   if (!content.includes(begin('container-runner-env')) && content.includes(spawnLog)) {
@@ -588,6 +663,7 @@ export function uninstallContainerRunner(source: string): string {
   return uninstallMarks(source, [
     'container-runner-env',
     'container-runner-meta',
+    'wake-prepare-meta',
     'container-runner-docker-env-import',
     'container-runner-import',
   ]);
