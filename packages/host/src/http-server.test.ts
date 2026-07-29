@@ -208,6 +208,10 @@ describe('sessionio http server routes', () => {
     ).toBe('web');
 
     expect((await fetch(`${baseUrl}/nope?${qs}`)).status).toBe(404);
+    // Unknown path without session query params must still be 404 (not 400).
+    expect((await fetch(`${baseUrl}/nope`)).status).toBe(404);
+    // Known path, wrong method → 404
+    expect((await fetch(`${baseUrl}/inbound?${qs}`, { method: 'PUT' })).status).toBe(404);
 
     // Invalid JSON body → 400
     expect(

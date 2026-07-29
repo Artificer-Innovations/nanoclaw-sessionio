@@ -3,7 +3,6 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { FILE_TRANSFORMS } from './patches.js';
 import {
-  ENV_KEYS,
   findNanoclawRoot,
   HOST_COPY_RULES,
   hostResourcesDir,
@@ -176,9 +175,6 @@ function scaffoldEnvKeys(pending: PendingWrite[], unchanged: string[], root: str
         '# SESSIONIO_HTTP_PORT=18765\n' +
         '# SESSIONIO_BASE_URL=http://host.docker.internal:18765\n' +
         '# SESSIONIO_HTTP_TOKEN=\n';
-    }
-    for (const key of ENV_KEYS) {
-      void key;
     }
     if (content !== original) {
       stageIfChanged(pending, unchanged, target, path.relative(root, target), Buffer.from(content));

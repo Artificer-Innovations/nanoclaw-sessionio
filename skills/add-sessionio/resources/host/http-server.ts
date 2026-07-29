@@ -18,6 +18,19 @@ import type {
 /** Max JSON body size for mailbox POSTs (attachments are base64 in JSON). */
 export const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
 
+/** Paths that require agentGroupId + sessionId query params. */
+const SESSION_PATHS = new Set([
+  '/inbound',
+  '/outbound',
+  '/outbound/ack',
+  '/acks',
+  '/heartbeat',
+  '/liveness',
+  '/inbox',
+  '/outbox',
+  '/meta',
+]);
+
 export interface SessionioHttpServerOptions {
   host?: string;
   port?: number;
@@ -167,6 +180,13 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
         return;
       }
 
+      // Session routes only — unknown paths must 404 before parseSession,
+      // otherwise missing query params would mask them as 400.
+      if (!SESSION_PATHS.has(pathname)) {
+        sendJson(res, 404, { error: 'not_found' });
+        return;
+      }
+
       const session = parseSession(url);
 
       if (req.method === 'POST' && pathname === '/inbound') {
@@ -277,6 +297,7 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
         return;
       }
 
+      // Known path but wrong method (e.g. PUT /inbound).
       sendJson(res, 404, { error: 'not_found' });
     } catch (error) {
       const status = error instanceof RequestBodyTooLargeError ? 413 : 400;
