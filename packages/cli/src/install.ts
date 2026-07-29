@@ -188,6 +188,14 @@ function scaffoldEnvKeys(pending: PendingWrite[], unchanged: string[], root: str
   }
 }
 
+/** @internal Exported for unit tests — do not call from installer CLI paths. */
+export function stageResourcesForTests(
+  resourcesDir: string,
+  rules: { source: string; dest: string }[] = HOST_COPY_RULES,
+): void {
+  stageResources([], [], '/tmp/sessionio-unused-root', resourcesDir, rules, false);
+}
+
 function stageResources(
   pending: PendingWrite[],
   unchanged: string[],

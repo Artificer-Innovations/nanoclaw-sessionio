@@ -26,7 +26,13 @@ import {
   STOCK_MESSAGES_OUT,
 } from './test-fixtures.js';
 import { findNanoclawRoot, packageRoot, rewriteHostResource } from './paths.js';
-import { runInstall, runUninstall, runVerify, syncSkillToFork } from './install.js';
+import {
+  runInstall,
+  runUninstall,
+  runVerify,
+  stageResourcesForTests,
+  syncSkillToFork,
+} from './install.js';
 
 const tempRoots: string[] = [];
 
@@ -196,19 +202,15 @@ describe('install', () => {
   });
 
   it('throws when a bundled host resource is missing', () => {
-    const root = makeFixtureRoot();
-    const pkgHost = path.join(packageRoot(), 'packages/host/src/sessionio.ts');
-    const skillHost = path.join(packageRoot(), 'skills/add-sessionio/resources/host/sessionio.ts');
-    const pkgBak = `${pkgHost}.bak-coverage`;
-    const skillBak = `${skillHost}.bak-coverage`;
-    fs.renameSync(pkgHost, pkgBak);
-    fs.renameSync(skillHost, skillBak);
-    try {
-      expect(() => runInstall(root)).toThrow(/Missing bundled resource: sessionio\.ts/);
-    } finally {
-      fs.renameSync(pkgBak, pkgHost);
-      fs.renameSync(skillBak, skillHost);
-    }
+    // Use an empty temp resources dir — never rename live packages/host files
+    // (that races with parallel host vitest coverage in CI).
+    const emptyResources = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionio-empty-res-'));
+    expect(() =>
+      stageResourcesForTests(emptyResources, [
+        { source: 'sessionio.ts', dest: 'src/sessionio.ts' },
+      ]),
+    ).toThrow(/Missing bundled resource: sessionio\.ts/);
+    fs.rmSync(emptyResources, { recursive: true, force: true });
   });
 
   it('runInstall/verify/uninstall without --path use cwd NanoClaw root', () => {
