@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "changelog": [
+    "@changesets/changelog-github",
+    {
+      "repo": "Artificer-Innovations/nanoclaw-sessionio"
+    }
+  ],
+  "commit": false,
+  "fixed": [],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "develop",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@nanoclaw-sessionio/cli",
+    "@nanoclaw-sessionio/host",
+    "@nanoclaw-sessionio/runner",
+    "@nanoclaw-sessionio/shared"
+  ]
+}

@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - name: Skill resources match packages
+        run: node scripts/sync-resources.mjs && git diff --exit-code
+      - name: Unit tests with coverage
+        run: pnpm run test:coverage
+      - name: Build
+        run: pnpm run build
+      - name: Integration (fixture install → verify → uninstall)
+        run: pnpm run test:integration
