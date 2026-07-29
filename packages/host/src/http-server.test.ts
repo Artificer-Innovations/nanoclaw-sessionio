@@ -187,11 +187,17 @@ describe('sessionio http server routes', () => {
     await fetch(`${baseUrl}/meta?${qs}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ agentGroupId: 'ag' }),
+      body: JSON.stringify({
+        routing: { channel_type: 'web', platform_id: null, thread_id: null },
+      }),
     });
-    expect(((await (await fetch(`${baseUrl}/meta?${qs}`)).json()) as { agentGroupId: string }).agentGroupId).toBe(
-      'ag',
-    );
+    expect(
+      (
+        (await (await fetch(`${baseUrl}/meta?${qs}`)).json()) as {
+          routing: { channel_type: string };
+        }
+      ).routing.channel_type,
+    ).toBe('web');
 
     expect((await fetch(`${baseUrl}/nope?${qs}`)).status).toBe(404);
 

@@ -93,8 +93,12 @@ describe('HostMailboxStore', () => {
     expect(store.consumeOutbox(session, 'm1')).toEqual([{ name: 'o.txt' }]);
     expect(store.consumeOutbox(session, 'm1')).toEqual([]);
 
-    store.syncSessionMeta(session, { note: 'x' });
-    expect(store.getSessionMeta(session)).toEqual({ note: 'x' });
+    store.syncSessionMeta(session, {
+      routing: { channel_type: 'web', platform_id: null, thread_id: null },
+    });
+    expect(store.getSessionMeta(session)).toEqual({
+      routing: { channel_type: 'web', platform_id: null, thread_id: null },
+    });
     expect(store.getSessionMeta({ agentGroupId: 'z', sessionId: 'z' })).toBeUndefined();
 
     store.clear();
@@ -116,7 +120,7 @@ describe('HostMailboxStore', () => {
     expect(transport.countDueInbound?.(session)).toBe(1);
     await transport.ackDelivered(session, []);
     expect(transport.getProcessingAcks(session)).toEqual([]);
-    expect(transport.getLiveness(session).lastHeartbeatAt).toBe(0);
+    expect((await transport.getLiveness(session)).lastHeartbeatAt).toBe(0);
     transport.stageInbox?.(session, '1', [{ name: 'a' }]);
     expect(await transport.consumeOutbox(session, '1')).toEqual([]);
     transport.syncSessionMeta?.(session, {});
