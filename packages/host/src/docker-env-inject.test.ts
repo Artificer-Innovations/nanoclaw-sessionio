@@ -69,15 +69,23 @@ describe('docker-env-inject (split-brain / -e-after-image regressions)', () => {
     expect(args.slice(imageIdx).join(' ')).not.toMatch(/-e SESSIONIO_/);
   });
 
-  it('keeps -e flags before image when --entrypoint is missing (append-safe index)', () => {
+  it('keeps -e flags before image when --entrypoint is missing', () => {
     const args = ['run', '--rm', 'nanoclaw-agent:local', '-c', 'echo'];
-    expect(dockerEnvInsertIndex(args)).toBe(args.length);
+    const imageIdx = args.indexOf('nanoclaw-agent:local');
+    expect(dockerEnvInsertIndex(args)).toBe(imageIdx);
     injectSessionioContainerEnv(args, {
       sessionId: 's',
       agentGroupId: 'a',
       baseUrl: 'http://10.0.0.5:18765',
     });
-    expect(envKeysBeforeEntrypoint(args)).toContain('SESSIONIO_SESSION_ID');
+    const newImageIdx = args.indexOf('nanoclaw-agent:local');
+    expect(newImageIdx).toBeGreaterThan(imageIdx);
+    for (const key of ['SESSIONIO_SESSION_ID', 'NO_PROXY']) {
+      const flagIdx = args.findIndex((a, i) => a === '-e' && args[i + 1]?.startsWith(`${key}=`));
+      expect(flagIdx).toBeGreaterThanOrEqual(0);
+      expect(flagIdx).toBeLessThan(newImageIdx);
+    }
+    expect(args.slice(newImageIdx).join(' ')).not.toMatch(/-e SESSIONIO_/);
     expect(args.join(' ')).toContain('NO_PROXY=10.0.0.5,127.0.0.1,localhost');
   });
 
@@ -122,5 +130,12 @@ describe('docker-env-inject (split-brain / -e-after-image regressions)', () => {
     globalThis.URL = RealURL;
     expect(readExistingNoProxyFromArgs(['-e', 'NO_PROXY=z'], 'fallback')).toBe('z');
     expect(readExistingNoProxyFromArgs([], 'fallback')).toBe('fallback');
+  });
+
+  it('finds image after -- / --opt=value / value flags, and falls back to end', () => {
+    expect(dockerEnvInsertIndex(['run', '--', 'img'])).toBe(2);
+    expect(dockerEnvInsertIndex(['run', '--label=foo', 'img'])).toBe(2);
+    expect(dockerEnvInsertIndex(['run', '-e', 'A=1', '--rm', 'img'])).toBe(4);
+    expect(dockerEnvInsertIndex(['docker', 'run', '--rm'])).toBe(3);
   });
 });

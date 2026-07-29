@@ -4,7 +4,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { startSessionioHttpServer } from './http-server.js';
+import { resolveListenPort, startSessionioHttpServer } from './http-server.js';
 import {
   registerSessionTransport,
   setDefaultSessionTransport,
@@ -44,7 +44,6 @@ import { onShutdown } from './response-registry.js';
 import {
   applySessionioEnvFromFile as applySessionioEnv,
   SESSIONIO_DEFAULT_HTTP_HOST,
-  SESSIONIO_DEFAULT_HTTP_PORT,
 } from './sessionio-env.js';
 
 /** Apply .env SESSIONIO_* into process.env when unset (NanoClaw does not dotenv-load). */
@@ -196,7 +195,7 @@ export async function startSessionio(): Promise<void> {
     const host = process.env.SESSIONIO_HTTP_HOST ?? SESSIONIO_DEFAULT_HTTP_HOST;
     const started = await startSessionioHttpServer({
       host,
-      port: Number(process.env.SESSIONIO_HTTP_PORT ?? String(SESSIONIO_DEFAULT_HTTP_PORT)),
+      port: resolveListenPort(undefined, process.env.SESSIONIO_HTTP_PORT),
       token: process.env.SESSIONIO_HTTP_TOKEN,
       store: globalHostMailboxStore,
     });

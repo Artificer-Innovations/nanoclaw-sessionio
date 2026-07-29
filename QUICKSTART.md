@@ -104,7 +104,7 @@ SESSIONIO_SESSION_ID=<session-id>
 SESSIONIO_AGENT_GROUP_ID=<agent-group-id>
 ```
 
-Open the port (or put a TLS proxy in front). Prefer a real secret for `SESSIONIO_HTTP_TOKEN`. Today’s HTTP store is **in-memory on the host process** — a host restart clears pending mailbox queues (filesystem transport keeps SQLite durability).
+Open the port (or put a TLS proxy in front). Prefer a real secret for `SESSIONIO_HTTP_TOKEN`. The token is a **shared bearer, not a tenant boundary** — isolation is the per-tenant host process. Today’s HTTP store is **in-memory on the host process** — a host restart clears pending mailbox queues (filesystem transport keeps SQLite durability). See `api-contract.md` § Durability.
 
 ## nanoclaw-sandbox peer loop
 

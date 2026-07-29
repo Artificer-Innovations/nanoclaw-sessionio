@@ -12,6 +12,10 @@ describe('outbound-sync (MCP writeMessageOut → HTTP)', () => {
       body: '{"id":"o1"}',
     });
     expect(args[0]).toBe('curl');
+    expect(args).toContain('--connect-timeout');
+    expect(args).toContain('5');
+    expect(args).toContain('--max-time');
+    expect(args).toContain('15');
     expect(args).toContain('Authorization: Bearer secret');
     const url = args.at(-1)!;
     expect(url).toContain('/outbound?agentGroupId=ag');

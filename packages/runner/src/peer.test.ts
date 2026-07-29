@@ -131,6 +131,7 @@ describe('runner peer', () => {
 
     const bad = new SessionioPeerClient({
       baseUrl: 'http://mailbox.test',
+      maxAttempts: 1,
       fetchImpl: (async () => new Response('nope', { status: 500 })) as typeof fetch,
     });
     await expect(bad.pollInbound(session)).rejects.toThrow(/pollInbound failed/);
@@ -150,5 +151,67 @@ describe('runner peer', () => {
     await expect(bad.postAcks(session, [])).rejects.toThrow(/postAcks failed/);
     await expect(bad.stageOutbox(session, 'o1', [])).rejects.toThrow(/stageOutbox failed/);
     await expect(bad.getMeta(session)).rejects.toThrow(/getMeta failed/);
+  });
+
+  it('retries retryable failures then succeeds', async () => {
+    let attempts = 0;
+    const client = new SessionioPeerClient({
+      baseUrl: 'http://mailbox.test',
+      maxAttempts: 3,
+      retryBaseMs: 1,
+      fetchImpl: (async () => {
+        attempts += 1;
+        if (attempts < 3) return new Response('nope', { status: 503 });
+        return new Response(JSON.stringify({ messages: [] }), { status: 200 });
+      }) as typeof fetch,
+    });
+    await expect(client.pollInbound({ agentGroupId: 'ag', sessionId: 's1' })).resolves.toEqual([]);
+    expect(attempts).toBe(3);
+  });
+
+  it('retries network errors with backoff', async () => {
+    let attempts = 0;
+    const client = new SessionioPeerClient({
+      baseUrl: 'http://mailbox.test',
+      maxAttempts: 2,
+      retryBaseMs: 1,
+      fetchImpl: (async () => {
+        attempts += 1;
+        throw new Error('ECONNRESET');
+      }) as typeof fetch,
+    });
+    await expect(client.heartbeat({ agentGroupId: 'ag', sessionId: 's1' })).rejects.toThrow(
+      /ECONNRESET/,
+    );
+    expect(attempts).toBe(2);
+  });
+
+  it('wraps non-Error throws after retries are exhausted', async () => {
+    const client = new SessionioPeerClient({
+      baseUrl: 'http://mailbox.test',
+      maxAttempts: 1,
+      fetchImpl: (async () => {
+        throw 'plain-string';
+      }) as typeof fetch,
+    });
+    await expect(client.getMeta({ agentGroupId: 'ag', sessionId: 's1' })).rejects.toThrow(
+      /getMeta failed/,
+    );
+  });
+
+  it('retries 429 then succeeds', async () => {
+    let attempts = 0;
+    const client = new SessionioPeerClient({
+      baseUrl: 'http://mailbox.test',
+      maxAttempts: 2,
+      retryBaseMs: 1,
+      fetchImpl: (async () => {
+        attempts += 1;
+        if (attempts === 1) return new Response('slow', { status: 429 });
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    });
+    await client.heartbeat({ agentGroupId: 'ag', sessionId: 's1' });
+    expect(attempts).toBe(2);
   });
 });

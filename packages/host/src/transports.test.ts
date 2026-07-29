@@ -69,6 +69,7 @@ describe('HostMailboxStore', () => {
     expect(store.pollOutbound(session)).toHaveLength(1);
     store.ackDelivered(session, ['o1']);
     expect(store.pollOutbound(session)).toHaveLength(0);
+    store.ackDelivered(session, []);
 
     store.setProcessingAcks(session, [{ message_id: 'a', status: 'processing', claimed_at: 't1' }]);
     store.setProcessingAcks(session, [
@@ -98,6 +99,33 @@ describe('HostMailboxStore', () => {
       routing: { channel_type: 'web', platform_id: null, thread_id: null },
     });
     expect(store.getSessionMeta({ agentGroupId: 'z', sessionId: 'z' })).toBeUndefined();
+
+    // splice-on-ack + stale sweep (memory bounds)
+    store.enqueueOutbound(session, {
+      id: 'o2',
+      kind: 'chat',
+      timestamp: new Date().toISOString(),
+      platform_id: null,
+      channel_type: null,
+      thread_id: null,
+      content: '{}',
+      in_reply_to: null,
+    });
+    store.ackDelivered(session, ['o2']);
+    expect(store.pollOutbound(session)).toEqual([]);
+    // ack when no outbound list yet (?? [] branch)
+    store.ackDelivered({ agentGroupId: 'fresh', sessionId: 's' }, ['missing']);
+    store.touchHeartbeat(session, Date.now() - 10_000);
+    expect(store.sweepStaleSessions(1_000)).toBeGreaterThanOrEqual(1);
+    expect(store.getLiveness(session)).toEqual({ lastHeartbeatAt: 0 });
+    store.enqueueInbound(session, {
+      id: 'again',
+      kind: 'chat',
+      timestamp: new Date().toISOString(),
+      content: '{}',
+    });
+    store.evictSession(session);
+    expect(store.listInbound(session)).toEqual([]);
 
     store.clear();
     expect(store.listInbound(session)).toEqual([]);

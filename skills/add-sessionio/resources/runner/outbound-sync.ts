@@ -9,6 +9,10 @@ export interface OutboundSyncCurlOptions {
   sessionId: string;
   token?: string;
   body: string;
+  /** curl --connect-timeout seconds. Default 5. */
+  connectTimeoutSec?: number;
+  /** curl --max-time seconds. Default 15. */
+  maxTimeSec?: number;
 }
 
 /** Build curl argv for a synchronous outbound POST (no trailing slash on baseUrl required). */
@@ -19,9 +23,16 @@ export function buildOutboundSyncCurlArgs(options: OutboundSyncCurlOptions): str
     `${baseUrl}/outbound?agentGroupId=${encodeURIComponent(options.agentGroupId)}` +
     `&sessionId=${encodeURIComponent(options.sessionId)}`;
 
+  const connectTimeout = options.connectTimeoutSec ?? 5;
+  const maxTime = options.maxTimeSec ?? 15;
+
   const args = [
     'curl',
     '-sS',
+    '--connect-timeout',
+    String(connectTimeout),
+    '--max-time',
+    String(maxTime),
     '-o',
     '/dev/null',
     '-w',

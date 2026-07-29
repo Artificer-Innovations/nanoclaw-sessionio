@@ -1,6 +1,12 @@
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { globalHostMailboxStore, type HostMailboxStore } from './transports.js';
+import { timingSafeEqual } from 'node:crypto';
+import {
+  DEFAULT_SESSION_STALE_MS,
+  globalHostMailboxStore,
+  type HostMailboxStore,
+} from './transports.js';
+import { warnOnce } from './warn-once.js';
 import type {
   InboundMessage,
   OutboundMessage,
@@ -9,19 +15,66 @@ import type {
   SessionRef,
 } from './types.js';
 
+/** Max JSON body size for mailbox POSTs (attachments are base64 in JSON). */
+export const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+
 export interface SessionioHttpServerOptions {
   host?: string;
   port?: number;
   token?: string;
   store?: HostMailboxStore;
+  maxBodyBytes?: number;
+  /** Idle session map TTL; swept opportunistically on each request. */
+  sessionStaleMs?: number;
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+export class RequestBodyTooLargeError extends Error {
+  constructor(maxBytes: number) {
+    super(`request body too large (max ${maxBytes} bytes)`);
+    this.name = 'RequestBodyTooLargeError';
+  }
+}
+
+export function readBody(
+  req: IncomingMessage,
+  maxBytes: number = DEFAULT_MAX_BODY_BYTES,
+): Promise<string> {
+  const contentLength = Number(req.headers['content-length'] ?? '');
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    return Promise.reject(new RequestBodyTooLargeError(maxBytes));
+  }
+
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    let size = 0;
+    let settled = false;
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      req.destroy();
+      reject(error);
+    };
+
+    req.on('data', (chunk: Buffer | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buf.length;
+      if (size > maxBytes) {
+        fail(new RequestBodyTooLargeError(maxBytes));
+        return;
+      }
+      chunks.push(buf);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
   });
 }
 
@@ -32,6 +85,12 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
     'content-length': Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+/** 204 No Content must not include a message body. */
+function sendNoContent(res: ServerResponse): void {
+  res.writeHead(204);
+  res.end();
 }
 
 function parseSession(url: URL): SessionRef {
@@ -45,6 +104,14 @@ function parseSession(url: URL): SessionRef {
 
 function unauthorized(res: ServerResponse): void {
   sendJson(res, 401, { error: 'unauthorized' });
+}
+
+/** Constant-time Bearer comparison (length mismatch fails closed). */
+export function bearerTokenMatches(header: string, token: string): boolean {
+  const expected = Buffer.from(`Bearer ${token}`);
+  const actual = Buffer.from(header);
+  if (expected.length !== actual.length) return false;
+  return timingSafeEqual(expected, actual);
 }
 
 /** Resolve Host header for request URL parsing (testable). */
@@ -63,18 +130,32 @@ export function buildRequestUrl(reqUrl: string | undefined, host: string): URL {
   return new URL(reqUrl || '/', `http://${host}`);
 }
 
+function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1';
+}
+
 export function createSessionioHttpServer(options: SessionioHttpServerOptions = {}): http.Server {
   const store = options.store ?? globalHostMailboxStore;
   const token = options.token ?? process.env.SESSIONIO_HTTP_TOKEN ?? '';
+  const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  const sessionStaleMs = options.sessionStaleMs ?? DEFAULT_SESSION_STALE_MS;
+  let lastSweepAt = 0;
 
   return http.createServer(async (req, res) => {
     try {
       if (token) {
         const header = req.headers.authorization ?? '';
-        if (header !== `Bearer ${token}`) {
+        if (!bearerTokenMatches(header, token)) {
           unauthorized(res);
           return;
         }
+      }
+
+      const now = Date.now();
+      if (now - lastSweepAt > 30_000) {
+        store.sweepStaleSessions(sessionStaleMs, now);
+        lastSweepAt = now;
       }
 
       const host = requestHost(req.headers.host);
@@ -89,9 +170,9 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
       const session = parseSession(url);
 
       if (req.method === 'POST' && pathname === '/inbound') {
-        const message = JSON.parse(await readBody(req)) as InboundMessage;
+        const message = JSON.parse(await readBody(req, maxBodyBytes)) as InboundMessage;
         store.enqueueInbound(session, message);
-        sendJson(res, 204, null);
+        sendNoContent(res);
         return;
       }
 
@@ -108,9 +189,9 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
       }
 
       if (req.method === 'POST' && pathname === '/outbound') {
-        const message = JSON.parse(await readBody(req)) as OutboundMessage;
+        const message = JSON.parse(await readBody(req, maxBodyBytes)) as OutboundMessage;
         store.enqueueOutbound(session, message);
-        sendJson(res, 204, null);
+        sendNoContent(res);
         return;
       }
 
@@ -120,16 +201,16 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
       }
 
       if (req.method === 'POST' && pathname === '/outbound/ack') {
-        const body = JSON.parse(await readBody(req)) as { messageIds?: string[] };
+        const body = JSON.parse(await readBody(req, maxBodyBytes)) as { messageIds?: string[] };
         store.ackDelivered(session, body.messageIds ?? []);
-        sendJson(res, 204, null);
+        sendNoContent(res);
         return;
       }
 
       if (req.method === 'POST' && pathname === '/acks') {
-        const body = JSON.parse(await readBody(req)) as { acks?: ProcessingAck[] };
+        const body = JSON.parse(await readBody(req, maxBodyBytes)) as { acks?: ProcessingAck[] };
         store.setProcessingAcks(session, body.acks ?? []);
-        sendJson(res, 204, null);
+        sendNoContent(res);
         return;
       }
 
@@ -140,7 +221,7 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
 
       if (req.method === 'POST' && pathname === '/heartbeat') {
         store.touchHeartbeat(session);
-        sendJson(res, 204, null);
+        sendNoContent(res);
         return;
       }
 
@@ -150,12 +231,12 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
       }
 
       if (req.method === 'POST' && pathname === '/inbox') {
-        const body = JSON.parse(await readBody(req)) as {
+        const body = JSON.parse(await readBody(req, maxBodyBytes)) as {
           messageId: string;
           files: Parameters<HostMailboxStore['stageInbox']>[2];
         };
         store.stageInbox(session, body.messageId, body.files ?? []);
-        sendJson(res, 204, null);
+        sendNoContent(res);
         return;
       }
 
@@ -166,12 +247,12 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
       }
 
       if (req.method === 'POST' && pathname === '/outbox') {
-        const body = JSON.parse(await readBody(req)) as {
+        const body = JSON.parse(await readBody(req, maxBodyBytes)) as {
           messageId: string;
           files: Parameters<HostMailboxStore['stageOutbox']>[2];
         };
         store.stageOutbox(session, body.messageId, body.files ?? []);
-        sendJson(res, 204, null);
+        sendNoContent(res);
         return;
       }
 
@@ -182,9 +263,9 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
       }
 
       if (req.method === 'POST' && pathname === '/meta') {
-        const meta = JSON.parse(await readBody(req)) as SessionMeta;
+        const meta = JSON.parse(await readBody(req, maxBodyBytes)) as SessionMeta;
         store.syncSessionMeta(session, meta);
-        sendJson(res, 204, null);
+        sendNoContent(res);
         return;
       }
 
@@ -195,7 +276,8 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
 
       sendJson(res, 404, { error: 'not_found' });
     } catch (error) {
-      sendJson(res, 400, {
+      const status = error instanceof RequestBodyTooLargeError ? 413 : 400;
+      sendJson(res, status, {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -213,7 +295,9 @@ export function resolveListenPort(
   optionsPort: number | undefined,
   envPort: string | undefined = process.env.SESSIONIO_HTTP_PORT,
 ): number {
-  return optionsPort ?? Number(envPort ?? '18765');
+  if (optionsPort != null) return optionsPort;
+  const parsed = Number(envPort ?? '18765');
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 18765;
 }
 
 export function boundPortFromAddress(
@@ -228,6 +312,13 @@ export async function startSessionioHttpServer(
 ): Promise<{ server: http.Server; host: string; port: number; baseUrl: string }> {
   const host = resolveListenHost(options.host);
   const port = resolveListenPort(options.port);
+  const token = options.token ?? process.env.SESSIONIO_HTTP_TOKEN ?? '';
+  if (!token && !isLoopbackHost(host)) {
+    warnOnce(
+      'sessionio-http-no-token',
+      `SESSIONIO_HTTP_TOKEN is unset while binding ${host} — mailbox accepts unauthenticated reads/writes for any agentGroupId/sessionId. The token is a shared bearer, not a tenant boundary; isolation belongs to the per-tenant host process.`,
+    );
+  }
   const server = createSessionioHttpServer(options);
 
   await new Promise<void>((resolve, reject) => {

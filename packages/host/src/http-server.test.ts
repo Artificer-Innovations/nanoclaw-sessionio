@@ -1,17 +1,22 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
+import { EventEmitter } from 'node:events';
 import { HostMailboxStore } from './transports.js';
 import {
+  bearerTokenMatches,
   boundPortFromAddress,
   buildRequestUrl,
   createSessionioHttpServer,
+  readBody,
+  RequestBodyTooLargeError,
   requestHost,
   requestPathname,
   resolveListenHost,
   resolveListenPort,
   startSessionioHttpServer,
 } from './http-server.js';
-import type { Server } from 'node:http';
+import { resetWarnOnceForTests } from './warn-once.js';
+import type { IncomingMessage, Server } from 'node:http';
 
 const session = { agentGroupId: 'ag', sessionId: 's1' };
 const qs = `agentGroupId=${session.agentGroupId}&sessionId=${session.sessionId}`;
@@ -23,8 +28,10 @@ describe('sessionio http server routes', () => {
 
   afterEach(async () => {
     if (server) {
+      const closing = server;
+      server = undefined as unknown as Server;
       await new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
+        closing.close((err) => (err ? reject(err) : resolve()));
       });
     }
   });
@@ -258,6 +265,11 @@ describe('sessionio http server routes', () => {
     expect(resolveListenPort(0)).toBe(0);
     expect(resolveListenPort(undefined, '9')).toBe(9);
     expect(resolveListenPort(undefined, undefined)).toBe(18765);
+    expect(resolveListenPort(undefined, 'nope')).toBe(18765);
+    expect(resolveListenPort(undefined, 'NaN')).toBe(18765);
+    expect(bearerTokenMatches('Bearer secret', 'secret')).toBe(true);
+    expect(bearerTokenMatches('Bearer wrong', 'secret')).toBe(false);
+    expect(bearerTokenMatches('Bearer', 'secret')).toBe(false);
     expect(requestHost(undefined)).toBe('127.0.0.1');
     expect(requestHost('')).toBe('127.0.0.1');
     expect(requestHost(['a.example', 'b.example'])).toBe('a.example');
@@ -323,5 +335,92 @@ describe('sessionio http server routes', () => {
       req.on('error', reject);
       req.end();
     });
+  });
+
+  it('returns 204 with empty body and rejects oversized POSTs', async () => {
+    resetWarnOnceForTests();
+    store = new HostMailboxStore();
+    const started = await startSessionioHttpServer({
+      host: '127.0.0.1',
+      port: 0,
+      store,
+      maxBodyBytes: 64,
+    });
+    server = started.server;
+    baseUrl = started.baseUrl;
+
+    const ack = await fetch(`${baseUrl}/heartbeat?${qs}`, { method: 'POST' });
+    expect(ack.status).toBe(204);
+    expect(await ack.text()).toBe('');
+
+    const huge = await fetch(`${baseUrl}/inbound?${qs}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'x'.repeat(200),
+    });
+    expect(huge.status).toBe(413);
+  });
+
+  it('warns once when binding non-loopback without a token', async () => {
+    resetWarnOnceForTests();
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(String(args[0] ?? ''));
+    };
+    try {
+      const started = await startSessionioHttpServer({
+        host: '0.0.0.0',
+        port: 0,
+        store: new HostMailboxStore(),
+        token: '',
+      });
+      server = started.server;
+      expect(warnings.some((w) => w.includes('SESSIONIO_HTTP_TOKEN is unset'))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  it('readBody enforces size caps and settles safely', async () => {
+    await expect(
+      readBody({ headers: { 'content-length': '999' } } as IncomingMessage, 10),
+    ).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+
+    const oversized = Object.assign(new EventEmitter(), {
+      headers: {},
+      destroy() {},
+    }) as unknown as IncomingMessage;
+    const oversizedP = readBody(oversized, 4);
+    queueMicrotask(() => {
+      oversized.emit('data', 'hello');
+      oversized.emit('data', 'more');
+      oversized.emit('error', new Error('after-settle'));
+      oversized.emit('end');
+    });
+    await expect(oversizedP).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+
+    const errored = Object.assign(new EventEmitter(), {
+      headers: {},
+      destroy() {},
+    }) as unknown as IncomingMessage;
+    const erroredP = readBody(errored, 100);
+    queueMicrotask(() => {
+      errored.emit('error', new Error('socket-down'));
+      errored.emit('end');
+    });
+    await expect(erroredP).rejects.toThrow(/socket-down/);
+
+    const ok = Object.assign(new EventEmitter(), {
+      headers: {},
+      destroy() {},
+    }) as unknown as IncomingMessage;
+    const okP = readBody(ok, 100);
+    queueMicrotask(() => {
+      ok.emit('data', Buffer.from('ab'));
+      ok.emit('data', 'c');
+      ok.emit('end');
+    });
+    await expect(okP).resolves.toBe('abc');
   });
 });

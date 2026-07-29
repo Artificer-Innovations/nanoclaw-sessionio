@@ -3,9 +3,106 @@
  * Used by the container-runner patch so env flags land *before* the image name.
  */
 
+/** `docker run` options that consume the next argv token as a value. */
+const DOCKER_RUN_VALUE_OPTS = new Set([
+  '-e',
+  '--env',
+  '--env-file',
+  '-v',
+  '--volume',
+  '-w',
+  '--workdir',
+  '-u',
+  '--user',
+  '-p',
+  '--publish',
+  '-m',
+  '--memory',
+  '--memory-reservation',
+  '--memory-swap',
+  '--name',
+  '--network',
+  '--net',
+  '--entrypoint',
+  '-h',
+  '--hostname',
+  '--add-host',
+  '--device',
+  '-l',
+  '--label',
+  '--cidfile',
+  '--cpus',
+  '--cpuset-cpus',
+  '--gpus',
+  '--group-add',
+  '--health-cmd',
+  '--health-interval',
+  '--health-retries',
+  '--health-timeout',
+  '--ipc',
+  '--ip',
+  '--link',
+  '--log-driver',
+  '--log-opt',
+  '--mac-address',
+  '--mount',
+  '--pid',
+  '--platform',
+  '--restart',
+  '--runtime',
+  '--security-opt',
+  '--shm-size',
+  '--stop-signal',
+  '--stop-timeout',
+  '--tmpfs',
+  '--ulimit',
+  '--userns',
+  '--uts',
+  '--volume-driver',
+  '--volumes-from',
+  '--cgroup-parent',
+  '--blkio-weight',
+  '--cpu-shares',
+  '--cpu-period',
+  '--cpu-quota',
+]);
+
+/**
+ * Index at which to splice `-e` flags so they remain docker *options*
+ * (before IMAGE), not container command args.
+ *
+ * Prefers `--entrypoint` when present (NanoClaw's usual shape); otherwise
+ * walks `docker run` argv to find the image token.
+ */
 export function dockerEnvInsertIndex(args: readonly string[]): number {
-  const idx = args.indexOf('--entrypoint');
-  return idx >= 0 ? idx : args.length;
+  const entryIdx = args.indexOf('--entrypoint');
+  if (entryIdx >= 0) return entryIdx;
+
+  let i = 0;
+  if (args[i] === 'docker') i += 1;
+  if (args[i] === 'run') i += 1;
+
+  while (i < args.length) {
+    const arg = args[i]!;
+    if (arg === '--') {
+      return Math.min(i + 1, args.length);
+    }
+    if (!arg.startsWith('-')) {
+      return i;
+    }
+    // --opt=value form (no separate value token)
+    if (arg.startsWith('--') && arg.includes('=')) {
+      i += 1;
+      continue;
+    }
+    if (DOCKER_RUN_VALUE_OPTS.has(arg)) {
+      i += 2;
+      continue;
+    }
+    // Boolean / clustered short flags (-it, --rm, -d, …)
+    i += 1;
+  }
+  return args.length;
 }
 
 /** Upsert `-e KEY=value` at `insertAt` (before `--entrypoint` / image). */
@@ -73,7 +170,7 @@ export interface InjectSessionioContainerEnvOptions {
 }
 
 /**
- * Mutates `args` in place: injects SESSIONIO_* and NO_PROXY before `--entrypoint`.
+ * Mutates `args` in place: injects SESSIONIO_* and NO_PROXY before `--entrypoint` / image.
  * Caller should only invoke when transport resolves to http.
  */
 export function injectSessionioContainerEnv(

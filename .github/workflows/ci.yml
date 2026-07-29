@@ -19,6 +19,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm run lint
+      - name: Skill resources match packages
+        run: node scripts/sync-resources.mjs && git diff --exit-code
       - name: Unit tests with coverage
         run: pnpm run test:coverage
       - name: Build
