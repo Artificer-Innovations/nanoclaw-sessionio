@@ -160,22 +160,16 @@ export function patchSessionManager(source: string): string {
     );
 
     // Real NanoClaw uses `localPath` in this docblock; keep a fallback for older fixtures.
-    const bodyEndCandidates = [
-      `  updateSession(sessionId, { last_active: new Date().toISOString() });
-}
-
-/**
- * If message content has attachments with base64 \`data\`, save them to
- * the session's inbox directory and replace with \`localPath\`.`,
-      `  updateSession(sessionId, { last_active: new Date().toISOString() });
-}
-
-/**
- * If message content has attachments with base64 \`data\`, save them to
- * the session's inbox directory and replace with file paths.`,
-    ];
-    const bodyEnd = bodyEndCandidates.find((candidate) => content.includes(candidate));
-    if (!bodyEnd) throw new Error('Could not find writeSessionMessage body end anchor');
+    // Allow extra blank lines after `}` — uninstall used to leave an extra newline and
+    // a strict exact-string anchor then blocked reinstall.
+    const bodyEndMatch = content.match(
+      /  updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\r?\n\}\r?\n+(\/\*\*\r?\n \* If message content has attachments with base64 `data`, save them to\r?\n \* the session's inbox directory and replace with (?:`localPath`|file paths)\.)/,
+    );
+    if (!bodyEndMatch || bodyEndMatch.index === undefined) {
+      throw new Error('Could not find writeSessionMessage body end anchor');
+    }
+    const bodyEnd = bodyEndMatch[0];
+    const docblockStart = bodyEndMatch[1];
 
     const writeWrapper = `${marked(
       'session-manager-write',
@@ -198,7 +192,7 @@ export function patchSessionManager(source: string): string {
 
 ${writeWrapper}
 
-${bodyEnd.slice(bodyEnd.indexOf('/**'))}`,
+${docblockStart}`,
       'writeSessionMessage body end',
     );
   }
@@ -213,6 +207,11 @@ export function uninstallSessionManager(source: string): string {
       `export function filesystemWriteSessionMessage\\( // ${escapeRegExp(SESSIONIO_MARKER)}:renamed-write`,
     ),
     'export function writeSessionMessage(',
+  );
+  // Normalize spacing so a later install can re-find the body-end anchor.
+  content = content.replace(
+    /(  updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\r?\n\})\r?\n+(?=\/\*\*)/,
+    '$1\n\n',
   );
   return content;
 }

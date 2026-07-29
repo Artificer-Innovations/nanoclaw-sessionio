@@ -11,12 +11,14 @@ import {
   uninstallIndex,
   uninstallMessagesOut,
   uninstallPollLoop,
+  uninstallSessionManager,
 } from './patches.js';
 import {
   STOCK_CONTAINER_RUNNER,
   STOCK_INDEX,
   STOCK_MESSAGES_OUT,
   STOCK_POLL_LOOP,
+  STOCK_SESSION_MANAGER,
 } from './test-fixtures.js';
 
 const SESSIONIO_MARKER = '@nanoclaw-sessionio';
@@ -285,6 +287,23 @@ export function writeMessageOut(msg: WriteMessageOut): number {
     expect(restored).toContain('startActiveDeliveryPoll();');
     expect(restored).toContain('startSweepDeliveryPoll();');
     expect(restored).toBe(STOCK_INDEX);
+  });
+
+  it('reinstalls session-manager after uninstall left extra blank lines', () => {
+    const installed = patchSessionManager(STOCK_SESSION_MANAGER);
+    const restored = uninstallSessionManager(installed);
+    // Simulate older uninstall that left an extra blank before the docblock.
+    const dirty = restored.replace(
+      /updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\n\}\n\n\/\*\*/,
+      'updateSession(sessionId, { last_active: new Date().toISOString() });\n}\n\n\n/**',
+    );
+    expect(dirty).not.toBe(restored);
+    const reinstalled = patchSessionManager(dirty);
+    expect(reinstalled).toContain('filesystemWriteSessionMessage');
+    expect(reinstalled).toContain('@nanoclaw-sessionio:session-manager-write:begin');
+    expect(uninstallSessionManager(reinstalled)).toContain(
+      'export function writeSessionMessage(',
+    );
   });
 
   it('throws on session-manager body-end and delivery restore edge cases', () => {
