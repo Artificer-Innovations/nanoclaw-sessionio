@@ -53,9 +53,7 @@ describe('paths', () => {
     fs.mkdirSync(path.join(root, 'skills/add-sessionio/resources/runner'), { recursive: true });
     fs.mkdirSync(path.join(root, 'packages/cli/src'), { recursive: true });
     const start = path.join(root, 'packages/cli/src');
-    expect(hostResourcesDir(start)).toBe(
-      path.join(root, 'skills/add-sessionio/resources/host'),
-    );
+    expect(hostResourcesDir(start)).toBe(path.join(root, 'skills/add-sessionio/resources/host'));
     expect(runnerResourcesDir(start)).toBe(
       path.join(root, 'skills/add-sessionio/resources/runner'),
     );

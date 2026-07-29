@@ -18,11 +18,11 @@ Default transport is **filesystem** — same shared SQLite + inbox/outbox paths 
 
 ## Transports: filesystem vs http vs loopback
 
-| `SESSIONIO_TRANSPORT` | What it does | When to use |
-| --- | --- | --- |
-| `filesystem` (default) | Host and agent share session dirs / SQLite | Co-located agents (local Docker with mounts) |
-| `http` | Host owns an HTTP mailbox; agent peers over HTTP | Remote agents, or any setup without shared mounts |
-| `loopback` | **Alias for `http`** (normalized at resolve time) | Same as `http`, named for “HTTP on this host” / Docker→host tests |
+| `SESSIONIO_TRANSPORT`  | What it does                                      | When to use                                                       |
+| ---------------------- | ------------------------------------------------- | ----------------------------------------------------------------- |
+| `filesystem` (default) | Host and agent share session dirs / SQLite        | Co-located agents (local Docker with mounts)                      |
+| `http`                 | Host owns an HTTP mailbox; agent peers over HTTP  | Remote agents, or any setup without shared mounts                 |
+| `loopback`             | **Alias for `http`** (normalized at resolve time) | Same as `http`, named for “HTTP on this host” / Docker→host tests |
 
 **`loopback` is not a different protocol.** It registers and resolves to the same HTTP transport and in-memory host store. Prefer the name `http` when the agent is on another machine; use `loopback` if you want the env to read as “local HTTP mailbox” (e.g. sandbox + `host.docker.internal`).
 
@@ -36,33 +36,33 @@ NanoClaw does **not** load `.env` into `process.env` for arbitrary keys. Session
 
 ### Core
 
-| Variable | Required | Meaning |
-| --- | --- | --- |
+| Variable              | Required                  | Meaning                                       |
+| --------------------- | ------------------------- | --------------------------------------------- |
 | `SESSIONIO_TRANSPORT` | No (default `filesystem`) | `filesystem` \| `http` \| `loopback` (→ http) |
 
 ### Host mailbox server (only when transport is `http` / `loopback`)
 
-| Variable | Required | Meaning |
-| --- | --- | --- |
-| `SESSIONIO_HTTP_HOST` | No (default `0.0.0.0`) | Bind address for the mailbox HTTP server. Use `0.0.0.0` so Docker agents can reach the host; `127.0.0.1` is host-only and usually breaks container peers. |
-| `SESSIONIO_HTTP_PORT` | No (default `18765`) | Bind port |
-| `SESSIONIO_HTTP_TOKEN` | Recommended | Shared bearer secret. If set, every request must send `Authorization: Bearer <token>`. Use the **same** value on host and agent. Empty = no auth (dev only). |
+| Variable               | Required               | Meaning                                                                                                                                                      |
+| ---------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SESSIONIO_HTTP_HOST`  | No (default `0.0.0.0`) | Bind address for the mailbox HTTP server. Use `0.0.0.0` so Docker agents can reach the host; `127.0.0.1` is host-only and usually breaks container peers.    |
+| `SESSIONIO_HTTP_PORT`  | No (default `18765`)   | Bind port                                                                                                                                                    |
+| `SESSIONIO_HTTP_TOKEN` | Recommended            | Shared bearer secret. If set, every request must send `Authorization: Bearer <token>`. Use the **same** value on host and agent. Empty = no auth (dev only). |
 
 ### Agent peer (HTTP / loopback)
 
 These must be visible inside the agent process. The installer injects them on container spawn when transport resolves to `http`; for non-Docker agents, set them in that runtime’s env.
 
-| Variable | Required for HTTP | Meaning |
-| --- | --- | --- |
-| `SESSIONIO_BASE_URL` | **Yes** | Base URL the **agent** uses to call the host mailbox (no trailing slash required). Examples: `http://host.docker.internal:18765` (Docker Desktop → host), `http://10.0.0.5:18765` (LAN), `https://mailbox.example.com`. |
-| `SESSIONIO_TRANSPORT` | Yes (injected) | Must be `http` or `loopback` inside the agent or it keeps using SQLite. |
-| `SESSIONIO_HTTP_TOKEN` | If host requires it | Same bearer as the host |
-| `SESSIONIO_SESSION_ID` | Injected by installer | Session id for mailbox query params |
-| `SESSIONIO_AGENT_GROUP_ID` | Injected (or `container.json`) | Agent group id for mailbox query params |
+| Variable                   | Required for HTTP              | Meaning                                                                                                                                                                                                                 |
+| -------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SESSIONIO_BASE_URL`       | **Yes**                        | Base URL the **agent** uses to call the host mailbox (no trailing slash required). Examples: `http://host.docker.internal:18765` (Docker Desktop → host), `http://10.0.0.5:18765` (LAN), `https://mailbox.example.com`. |
+| `SESSIONIO_TRANSPORT`      | Yes (injected)                 | Must be `http` or `loopback` inside the agent or it keeps using SQLite.                                                                                                                                                 |
+| `SESSIONIO_HTTP_TOKEN`     | If host requires it            | Same bearer as the host                                                                                                                                                                                                 |
+| `SESSIONIO_SESSION_ID`     | Injected by installer          | Session id for mailbox query params                                                                                                                                                                                     |
+| `SESSIONIO_AGENT_GROUP_ID` | Injected (or `container.json`) | Agent group id for mailbox query params                                                                                                                                                                                 |
 
 Also injected when needed: `NO_PROXY` / `no_proxy` including the peer hostname so OneCLI/`HTTP_PROXY` does not swallow mailbox traffic.
 
-### What does *not* need to match
+### What does _not_ need to match
 
 - `SESSIONIO_HTTP_HOST` is the **listen** address on the host.
 - `SESSIONIO_BASE_URL` is the **dial** URL from the agent’s network namespace.

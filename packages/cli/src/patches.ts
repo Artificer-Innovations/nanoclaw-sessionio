@@ -570,7 +570,8 @@ export function patchPollLoop(source: string): string {
   // or that eagerly captured the peer before registerSessionioRunner().
   if (
     content.includes(begin('poll-loop-peer')) &&
-    (!content.includes('sessionioGetPendingMessages') || content.includes('const __sessionioPeer = getSessionioPeer()'))
+    (!content.includes('sessionioGetPendingMessages') ||
+      content.includes('const __sessionioPeer = getSessionioPeer()'))
   ) {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
@@ -580,7 +581,10 @@ export function patchPollLoop(source: string): string {
     content = content.replace(/\bawait sessionioMarkCompleted\(/g, 'markCompleted(');
     content = content.replace(/\bawait sessionioMarkScriptSkipped\(/g, 'markScriptSkipped(');
     content = content.replace(/\bawait sessionioTouchHeartbeat\(/g, 'touchHeartbeat(');
-    content = content.replace(/\(await getPendingMessages\(([^)]*)\)\)\.filter\(/g, 'getPendingMessages($1).filter(');
+    content = content.replace(
+      /\(await getPendingMessages\(([^)]*)\)\)\.filter\(/g,
+      'getPendingMessages($1).filter(',
+    );
   }
 
   const names = ['poll-loop-peer'];
@@ -733,10 +737,22 @@ async function sessionioTouchHeartbeat() {
     }
     if (!tail.includes('await dispatchResultText(')) {
       // Only call sites — do not rewrite `function deliverErrorResult(` declarations.
-      tail = tail.replace(/(?<!function )(?<!await )dispatchResultText\(/g, 'await dispatchResultText(');
-      tail = tail.replace(/(?<!function )(?<!await )autoAppendTaskLog\(/g, 'await autoAppendTaskLog(');
-      tail = tail.replace(/(?<!function )(?<!await )deliverErrorResult\(/g, 'await deliverErrorResult(');
-      tail = tail.replace(/(?<!function )(?<!await )sendToDestination\(/g, 'await sendToDestination(');
+      tail = tail.replace(
+        /(?<!function )(?<!await )dispatchResultText\(/g,
+        'await dispatchResultText(',
+      );
+      tail = tail.replace(
+        /(?<!function )(?<!await )autoAppendTaskLog\(/g,
+        'await autoAppendTaskLog(',
+      );
+      tail = tail.replace(
+        /(?<!function )(?<!await )deliverErrorResult\(/g,
+        'await deliverErrorResult(',
+      );
+      tail = tail.replace(
+        /(?<!function )(?<!await )sendToDestination\(/g,
+        'await sendToDestination(',
+      );
     }
     content = head + tail;
   }

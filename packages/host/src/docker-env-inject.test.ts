@@ -90,7 +90,9 @@ describe('docker-env-inject (split-brain / -e-after-image regressions)', () => {
       baseUrl: 'http://host.docker.internal:18765',
       hostNoProxy: 'from-host',
     });
-    const sessionFlags = args.filter((a, i) => a === '-e' && args[i + 1]?.startsWith('SESSIONIO_SESSION_ID='));
+    const sessionFlags = args.filter(
+      (a, i) => a === '-e' && args[i + 1]?.startsWith('SESSIONIO_SESSION_ID='),
+    );
     expect(sessionFlags).toHaveLength(1);
     expect(args).toContain('SESSIONIO_SESSION_ID=new');
     const noProxy = args.find((a) => a.startsWith('NO_PROXY='));

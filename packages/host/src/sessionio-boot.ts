@@ -143,12 +143,7 @@ function createNanoclawFilesystemDeps() {
         return [];
       }
       if (filenames.length === 0) return [];
-      const files = readOutboxFiles(
-        session.agentGroupId,
-        session.sessionId,
-        messageId,
-        filenames,
-      );
+      const files = readOutboxFiles(session.agentGroupId, session.sessionId, messageId, filenames);
       if (!files) return [];
       return files.map((f) => ({
         name: f.filename,

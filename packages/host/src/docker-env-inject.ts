@@ -36,7 +36,10 @@ export function mergeNoProxy(current: string | undefined, extra: string): string
   return [...parts].join(',');
 }
 
-export function peerHostFromBaseUrl(baseUrl: string | undefined, fallback = 'host.docker.internal'): string {
+export function peerHostFromBaseUrl(
+  baseUrl: string | undefined,
+  fallback = 'host.docker.internal',
+): string {
   if (!baseUrl) return fallback;
   try {
     const hostname = new URL(baseUrl).hostname;

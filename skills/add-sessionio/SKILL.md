@@ -42,12 +42,12 @@ After install, `src/sessionio.conformance.test.ts` asserts heartbeat liveness he
 
 ## Env
 
-| Key | Purpose |
-| --- | --- |
-| `SESSIONIO_TRANSPORT` | `filesystem` (default), `http`, or `loopback` (**alias for http**) |
+| Key                                           | Purpose                                                             |
+| --------------------------------------------- | ------------------------------------------------------------------- |
+| `SESSIONIO_TRANSPORT`                         | `filesystem` (default), `http`, or `loopback` (**alias for http**)  |
 | `SESSIONIO_HTTP_HOST` / `SESSIONIO_HTTP_PORT` | Host mailbox **listen** bind (default host `0.0.0.0`, port `18765`) |
-| `SESSIONIO_BASE_URL` | URL the **agent** dials (often differs from listen host) |
-| `SESSIONIO_HTTP_TOKEN` | Optional shared bearer (recommended outside local-only experiments) |
+| `SESSIONIO_BASE_URL`                          | URL the **agent** dials (often differs from listen host)            |
+| `SESSIONIO_HTTP_TOKEN`                        | Optional shared bearer (recommended outside local-only experiments) |
 
 `loopback` is for local/Docker→host wording; multi-machine setups should use `http` with a reachable `SESSIONIO_BASE_URL`. Full tables and examples: package [QUICKSTART.md](../../QUICKSTART.md) (or the copy under your install’s docs).
 

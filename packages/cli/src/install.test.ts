@@ -180,10 +180,7 @@ describe('install', () => {
   it('throws when a bundled host resource is missing', () => {
     const root = makeFixtureRoot();
     const pkgHost = path.join(packageRoot(), 'packages/host/src/sessionio.ts');
-    const skillHost = path.join(
-      packageRoot(),
-      'skills/add-sessionio/resources/host/sessionio.ts',
-    );
+    const skillHost = path.join(packageRoot(), 'skills/add-sessionio/resources/host/sessionio.ts');
     const pkgBak = `${pkgHost}.bak-coverage`;
     const skillBak = `${skillHost}.bak-coverage`;
     fs.renameSync(pkgHost, pkgBak);

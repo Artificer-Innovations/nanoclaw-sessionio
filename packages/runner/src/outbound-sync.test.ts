@@ -49,9 +49,9 @@ describe('mailbox sessionRefFromEnv', () => {
     expect(() => sessionRefFromEnv({ SESSIONIO_SESSION_ID: 's' }, '')).toThrow(
       /SESSIONIO_AGENT_GROUP_ID/,
     );
-    expect(sessionRefFromEnv({ SESSIONIO_SESSION_ID: 's', SESSIONIO_AGENT_GROUP_ID: 'ag' })).toEqual(
-      { sessionId: 's', agentGroupId: 'ag' },
-    );
+    expect(
+      sessionRefFromEnv({ SESSIONIO_SESSION_ID: 's', SESSIONIO_AGENT_GROUP_ID: 'ag' }),
+    ).toEqual({ sessionId: 's', agentGroupId: 'ag' });
   });
 
   it('maps inbound wire to pending row', () => {

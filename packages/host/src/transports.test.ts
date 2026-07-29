@@ -70,9 +70,7 @@ describe('HostMailboxStore', () => {
     store.ackDelivered(session, ['o1']);
     expect(store.pollOutbound(session)).toHaveLength(0);
 
-    store.setProcessingAcks(session, [
-      { message_id: 'a', status: 'processing', claimed_at: 't1' },
-    ]);
+    store.setProcessingAcks(session, [{ message_id: 'a', status: 'processing', claimed_at: 't1' }]);
     store.setProcessingAcks(session, [
       { message_id: 'a', status: 'completed', claimed_at: 't2' },
       { message_id: 'b', status: 'processing', claimed_at: 't3' },

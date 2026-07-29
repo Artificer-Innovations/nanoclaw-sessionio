@@ -13,11 +13,11 @@ With the HTTP mailbox transport, the host owns the queues and exposes them over 
 
 Default install stays on the **filesystem** transport (zero behavior change). Switch to **http** when the agent cannot see the host’s session directories.
 
-| Transport | Role |
-| --- | --- |
-| **filesystem** (default) | Shared session dirs / SQLite — same machine, mounts available |
-| **http** | Host HTTP mailbox; agent peers over HTTP — no shared mounts |
-| **loopback** | Alias for **http** (same protocol). Handy name for local Docker→host tests |
+| Transport                | Role                                                                       |
+| ------------------------ | -------------------------------------------------------------------------- |
+| **filesystem** (default) | Shared session dirs / SQLite — same machine, mounts available              |
+| **http**                 | Host HTTP mailbox; agent peers over HTTP — no shared mounts                |
+| **loopback**             | Alias for **http** (same protocol). Handy name for local Docker→host tests |
 
 Delivery model matches `nanoclaw-hosthooks`: npm package + skill installer that patches your NanoClaw fork. Not an upstream core PR.
 

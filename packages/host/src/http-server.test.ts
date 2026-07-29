@@ -73,9 +73,9 @@ describe('sessionio http server routes', () => {
     });
 
     // Non-first poll skips onWake; processAfter filters future messages.
-    const skipped = (await (
-      await fetch(`${baseUrl}/inbound?${qs}`)
-    ).json()) as { messages: unknown[] };
+    const skipped = (await (await fetch(`${baseUrl}/inbound?${qs}`)).json()) as {
+      messages: unknown[];
+    };
     expect(skipped.messages).toHaveLength(1);
 
     // First poll can take onWake once processAfter is not blocking — enqueue ready onWake.

@@ -85,12 +85,11 @@ describe('remaining patches', () => {
   });
 
   it('upgrades stale append-style container-runner env blocks', () => {
-    const withStale =
-      STOCK_CONTAINER_RUNNER.replace(
-        "  log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });",
-        `${staleContainerRunnerEnvBlock()}
+    const withStale = STOCK_CONTAINER_RUNNER.replace(
+      "  log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });",
+      `${staleContainerRunnerEnvBlock()}
   log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });`,
-      );
+    );
     expect(withStale).toContain('args.push');
     expect(withStale).not.toContain('injectSessionioContainerEnv');
 
@@ -212,9 +211,9 @@ export function writeMessageOut(msg: { id: string }): number {
 
   it('throws when messages-out / index anchors are missing', () => {
     expect(() => patchMessagesOut('export const nope = 1;\n')).toThrow(/import anchor/);
-    expect(() =>
-      patchMessagesOut(`import x from 'y';\nexport function other() {}\n`),
-    ).toThrow(/writeMessageOut export anchor/);
+    expect(() => patchMessagesOut(`import x from 'y';\nexport function other() {}\n`)).toThrow(
+      /writeMessageOut export anchor/,
+    );
     expect(() =>
       patchMessagesOut(`import x from 'y';
 export function writeMessageOut(msg: WriteMessageOut): number {
