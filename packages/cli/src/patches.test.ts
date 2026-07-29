@@ -140,6 +140,49 @@ describe('remaining patches', () => {
     expect(upgraded).not.toContain('{},\n    );');
   });
 
+  it('upgrades stale empty-meta that wrapped writeSessionRouting inside the marker', () => {
+    // Older installs put writeSessionRouting inside container-runner-meta.
+    const stale = STOCK_CONTAINER_RUNNER.replace(
+      '  writeSessionRouting(agentGroup.id, session.id);',
+      `${begin('container-runner-meta')}
+  writeSessionRouting(agentGroup.id, session.id);
+  {
+    const transport = resolveSessionTransport({
+      agentGroupId: agentGroup.id,
+      sessionId: session.id,
+    });
+    void transport.syncSessionMeta?.(
+      { agentGroupId: agentGroup.id, sessionId: session.id },
+      {},
+    );
+  }
+${end('container-runner-meta')}`,
+    );
+    expect(stale).toContain('{},\n    );');
+    const upgraded = patchContainerRunner(stale);
+    expect(upgraded).toContain('writeSessionRouting(agentGroup.id, session.id);');
+    expect(upgraded).toContain('@nanoclaw-sessionio:container-runner-meta:begin');
+    expect(upgraded).toContain('session_routing');
+    expect(upgraded).not.toContain('{},\n    );');
+  });
+
+  it('uninstall restores writeSessionRouting when old meta marker ate it', () => {
+    const withOld = STOCK_CONTAINER_RUNNER.replace(
+      '  writeSessionRouting(agentGroup.id, session.id);',
+      `${begin('container-runner-meta')}
+  writeSessionRouting(agentGroup.id, session.id);
+  { void 0; }
+${end('container-runner-meta')}`,
+    );
+    expect(withOld.match(/writeSessionRouting\(agentGroup\.id, session\.id\);/g)).toHaveLength(1);
+    const restored = uninstallContainerRunner(withOld);
+    expect(restored).not.toContain('container-runner-meta');
+    expect(restored).toContain('writeSessionRouting(agentGroup.id, session.id);');
+    expect(restored).toContain(
+      "log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });",
+    );
+  });
+
   it('upgrades stale append-style container-runner env blocks', () => {
     const withStale = STOCK_CONTAINER_RUNNER.replace(
       "  log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });",
