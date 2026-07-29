@@ -1,0 +1,66 @@
+{
+  "name": "nanoclaw-sessionio",
+  "version": "0.1.0",
+  "description": "Pluggable host↔agent session mailbox transports for NanoClaw",
+  "type": "module",
+  "license": "MIT",
+  "author": "Artificer Innovations, LLC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Artificer-Innovations/nanoclaw-sessionio"
+  },
+  "homepage": "https://github.com/Artificer-Innovations/nanoclaw-sessionio",
+  "bugs": {
+    "url": "https://github.com/Artificer-Innovations/nanoclaw-sessionio/issues"
+  },
+  "keywords": [
+    "nanoclaw",
+    "session",
+    "transport",
+    "mailbox",
+    "skills",
+    "extensions"
+  ],
+  "bin": {
+    "nanoclaw-sessionio": "./dist/cli/bin.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "api-contract.md",
+    "README.md",
+    "QUICKSTART.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "pnpm --filter @nanoclaw-sessionio/shared build && node scripts/sync-resources.mjs && pnpm --filter @nanoclaw-sessionio/host build && pnpm --filter @nanoclaw-sessionio/runner build && pnpm --filter @nanoclaw-sessionio/cli build && node scripts/sync-resources.mjs && node scripts/verify-publish-entry.mjs",
+    "typecheck": "pnpm --filter @nanoclaw-sessionio/shared --filter @nanoclaw-sessionio/host --filter @nanoclaw-sessionio/runner --filter @nanoclaw-sessionio/cli typecheck",
+    "lint": "prettier --check \"**/*.{ts,js,mjs,json,md,yml,yaml}\" --ignore-path .prettierignore",
+    "lint:fix": "prettier --write \"**/*.{ts,js,mjs,json,md,yml,yaml}\" --ignore-path .prettierignore",
+    "test:unit": "pnpm -r test:unit",
+    "test:coverage": "pnpm --filter @nanoclaw-sessionio/host --filter @nanoclaw-sessionio/runner --filter @nanoclaw-sessionio/cli test:coverage",
+    "test:integration": "node scripts/run-integration.mjs",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release:publish": "npm publish --provenance --access public",
+    "prepublishOnly": "pnpm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^0.5.1",
+    "@changesets/cli": "^2.29.4",
+    "@types/node": "^22.15.30",
+    "@vitest/coverage-v8": "^3.2.4",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

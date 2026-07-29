@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDirs": ["src", "type-fixtures"],
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "better-sqlite3": ["./type-fixtures/better-sqlite3.ts"]
+    }
+  },
+  "include": ["src", "type-fixtures"]
+}
