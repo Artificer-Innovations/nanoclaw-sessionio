@@ -89,6 +89,24 @@ describe('remaining patches', () => {
     expect(uninstallContainerRunner(patched)).not.toContain(
       '@nanoclaw-sessionio:container-runner-meta:begin',
     );
+    // Stock writeSessionRouting must survive uninstall (lives outside the marker).
+    expect(uninstallContainerRunner(patched)).toContain(
+      'writeSessionRouting(agentGroup.id, session.id);',
+    );
+  });
+
+  it('restores missing spawn writeSessionRouting then installs meta', () => {
+    const missing = STOCK_CONTAINER_RUNNER.replace(
+      '  writeSessionRouting(agentGroup.id, session.id);\n\n',
+      '',
+    );
+    expect(missing).not.toContain('writeSessionRouting(agentGroup.id, session.id);');
+    const patched = patchContainerRunner(missing);
+    expect(patched).toContain('writeSessionRouting(agentGroup.id, session.id);');
+    expect(patched).toContain('@nanoclaw-sessionio:container-runner-meta:begin');
+    expect(uninstallContainerRunner(patched)).toContain(
+      'writeSessionRouting(agentGroup.id, session.id);',
+    );
   });
 
   it('fills agenthosts wake-prepare-meta-slot with syncSessionMeta', () => {
@@ -339,10 +357,19 @@ import fs from 'fs';
       patchContainerRunner(`import { x } from 'y';
 export async function wakeContainer(agentGroup: { id: string; name: string }, session: { id: string }, containerName: string): Promise<void> {
   const args: string[] = [];
+}
+`),
+    ).toThrow(/writeSessionRouting or spawn log anchor/);
+
+    // Missing writeSessionRouting but spawn log present → restore then patch.
+    const restored = patchContainerRunner(`import { x } from 'y';
+export async function wakeContainer(agentGroup: { id: string; name: string }, session: { id: string }, containerName: string): Promise<void> {
+  const args: string[] = [];
   log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
 }
 const log = { info: (..._a: unknown[]) => undefined };
-`),
-    ).toThrow(/writeSessionRouting/);
+`);
+    expect(restored).toContain('writeSessionRouting(agentGroup.id, session.id);');
+    expect(restored).toContain('@nanoclaw-sessionio:container-runner-meta:begin');
   });
 });

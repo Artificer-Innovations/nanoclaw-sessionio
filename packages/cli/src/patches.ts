@@ -557,20 +557,36 @@ export function patchContainerRunner(source: string): string {
     }
   }
 
+  // Stock writeSessionRouting must stay OUTSIDE the marker — uninstallMarks would
+  // otherwise delete it (same failure mode as index delivery polls).
+  if (!content.includes('writeSessionRouting(agentGroup.id, session.id);')) {
+    if (!content.includes(spawnLog)) {
+      throw new Error(
+        'Could not find container-runner writeSessionRouting or spawn log anchor',
+      );
+    }
+    content = replaceOnce(
+      content,
+      spawnLog,
+      `  writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
+      'container-runner restore writeSessionRouting',
+    );
+  }
+
   if (!content.includes(begin('container-runner-meta'))) {
     content = replaceOnce(
       content,
       `  writeSessionRouting(agentGroup.id, session.id);`,
-      marked(
-        'container-runner-meta',
-        `  writeSessionRouting(agentGroup.id, session.id);
-${buildSyncSessionMetaBlock({
-  indent: '  ',
-  agentGroupIdExpr: 'agentGroup.id',
-  sessionIdExpr: 'session.id',
-  threadIdExpr: 'session.thread_id ?? null',
-})}`,
-      ),
+      `  writeSessionRouting(agentGroup.id, session.id);
+${marked(
+  'container-runner-meta',
+  buildSyncSessionMetaBlock({
+    indent: '  ',
+    agentGroupIdExpr: 'agentGroup.id',
+    sessionIdExpr: 'session.id',
+    threadIdExpr: 'session.thread_id ?? null',
+  }),
+)}`,
       'container-runner writeSessionRouting',
     );
   }
@@ -640,6 +656,18 @@ export function uninstallContainerRunner(source: string): string {
         'm',
       ),
       '    // @nanoclaw-sessionio:wake-prepare-meta-slot\n',
+    );
+  }
+  // Older installs put writeSessionRouting inside container-runner-meta; restore it.
+  const spawnLog =
+    "  log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });";
+  if (
+    !next.includes('writeSessionRouting(agentGroup.id, session.id);') &&
+    next.includes(spawnLog)
+  ) {
+    next = next.replace(
+      spawnLog,
+      `  writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
     );
   }
   return next;
