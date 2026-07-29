@@ -41,24 +41,15 @@ import {
 import { readEnvFile } from './env.js';
 import { log } from './log.js';
 import { onShutdown } from './response-registry.js';
-
-const SESSIONIO_ENV_KEYS = [
-  'SESSIONIO_TRANSPORT',
-  'SESSIONIO_HTTP_HOST',
-  'SESSIONIO_HTTP_PORT',
-  'SESSIONIO_BASE_URL',
-  'SESSIONIO_HTTP_TOKEN',
-] as const;
+import {
+  applySessionioEnvFromFile as applySessionioEnv,
+  SESSIONIO_DEFAULT_HTTP_HOST,
+  SESSIONIO_DEFAULT_HTTP_PORT,
+} from './sessionio-env.js';
 
 /** Apply .env SESSIONIO_* into process.env when unset (NanoClaw does not dotenv-load). */
 function applySessionioEnvFromFile(): void {
-  const fromFile = readEnvFile([...SESSIONIO_ENV_KEYS]);
-  for (const key of SESSIONIO_ENV_KEYS) {
-    const value = fromFile[key];
-    if (value && !process.env[key]?.trim()) {
-      process.env[key] = value;
-    }
-  }
+  applySessionioEnv(process.env, (keys) => readEnvFile(keys));
 }
 
 function createNanoclawFilesystemDeps() {
@@ -207,15 +198,16 @@ export async function startSessionio(): Promise<void> {
 
   if ((desired === 'http' || process.env.SESSIONIO_TRANSPORT === 'loopback') && !httpStarted) {
     // 0.0.0.0 so Docker agents can reach the host via host.docker.internal.
-    const host = process.env.SESSIONIO_HTTP_HOST ?? '0.0.0.0';
+    const host = process.env.SESSIONIO_HTTP_HOST ?? SESSIONIO_DEFAULT_HTTP_HOST;
     const started = await startSessionioHttpServer({
       host,
-      port: Number(process.env.SESSIONIO_HTTP_PORT ?? '18765'),
+      port: Number(process.env.SESSIONIO_HTTP_PORT ?? String(SESSIONIO_DEFAULT_HTTP_PORT)),
       token: process.env.SESSIONIO_HTTP_TOKEN,
       store: globalHostMailboxStore,
     });
     httpStarted = true;
-    const advertiseHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
+    const advertiseHost =
+      host === SESSIONIO_DEFAULT_HTTP_HOST || host === '::' ? '127.0.0.1' : host;
     process.env.SESSIONIO_BASE_URL =
       process.env.SESSIONIO_BASE_URL ?? `http://${advertiseHost}:${started.port}`;
     log.info('Sessionio HTTP mailbox listening', {

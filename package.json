@@ -39,7 +39,7 @@
     "lint": "prettier --check \"**/*.{ts,js,mjs,json,md,yml,yaml}\" --ignore-path .prettierignore",
     "lint:fix": "prettier --write \"**/*.{ts,js,mjs,json,md,yml,yaml}\" --ignore-path .prettierignore",
     "test:unit": "pnpm -r test:unit",
-    "test:coverage": "pnpm --filter @nanoclaw-sessionio/cli test:coverage",
+    "test:coverage": "pnpm --filter @nanoclaw-sessionio/host --filter @nanoclaw-sessionio/runner --filter @nanoclaw-sessionio/cli test:coverage",
     "test:integration": "node scripts/run-integration.mjs",
     "changeset": "changeset",
     "version": "changeset version",

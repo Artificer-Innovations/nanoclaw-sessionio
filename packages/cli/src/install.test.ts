@@ -7,6 +7,7 @@ import {
   patchDelivery,
   patchHostSweep,
   patchIndex,
+  patchRunnerIndex,
   patchSessionManager,
   uninstallDelivery,
   uninstallHostSweep,
@@ -162,10 +163,87 @@ describe('install', () => {
     expect(fs.existsSync(path.join(dest, 'SKILL.md'))).toBe(true);
   });
 
-  it('verify fails when anchors moved', () => {
+  it('verify reports missing call sites on unpatched stock files', () => {
     const root = makeFixtureRoot();
-    fs.writeFileSync(path.join(root, 'src/delivery.ts'), 'export const broken = true;\n');
-    expect(() => runInstall(root)).toThrow(/anchor/i);
+    const verify = runVerify(root);
+    expect(verify.ok).toBe(false);
+    expect(verify.issues.some((i) => i.includes('missing sessionio call sites'))).toBe(true);
+  });
+
+  it('install writes SESSIONIO keys into existing .env', () => {
+    const root = makeFixtureRoot();
+    fs.writeFileSync(path.join(root, '.env'), 'EXISTING=1\n');
+    runInstall(root);
+    expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toContain('SESSIONIO_TRANSPORT');
+  });
+
+  it('throws when a bundled host resource is missing', () => {
+    const root = makeFixtureRoot();
+    const pkgHost = path.join(packageRoot(), 'packages/host/src/sessionio.ts');
+    const skillHost = path.join(
+      packageRoot(),
+      'skills/add-sessionio/resources/host/sessionio.ts',
+    );
+    const pkgBak = `${pkgHost}.bak-coverage`;
+    const skillBak = `${skillHost}.bak-coverage`;
+    fs.renameSync(pkgHost, pkgBak);
+    fs.renameSync(skillHost, skillBak);
+    try {
+      expect(() => runInstall(root)).toThrow(/Missing bundled resource: sessionio\.ts/);
+    } finally {
+      fs.renameSync(pkgBak, pkgHost);
+      fs.renameSync(skillBak, skillHost);
+    }
+  });
+
+  it('runInstall/verify/uninstall without --path use cwd NanoClaw root', () => {
+    const root = fs.realpathSync(makeFixtureRoot());
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      expect(fs.realpathSync(runInstall().root)).toBe(root);
+      expect(runVerify().ok).toBe(true);
+      // Missing optional transform target is skipped on uninstall.
+      fs.unlinkSync(path.join(root, 'src/host-sweep.ts'));
+      const removed = runUninstall();
+      expect(fs.realpathSync(removed.root)).toBe(root);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it('verify catch stringifies non-Error throws from transforms', () => {
+    const root = makeFixtureRoot();
+    const target = FILE_TRANSFORMS.find((f) => f.path === 'src/delivery.ts')!;
+    const original = target.transform;
+    target.transform = () => {
+      throw 'delivery-boom';
+    };
+    try {
+      const verify = runVerify(root);
+      expect(verify.ok).toBe(false);
+      expect(verify.issues.some((i) => i.includes('delivery-boom'))).toBe(true);
+    } finally {
+      target.transform = original;
+    }
+  });
+
+  it('scaffoldEnvKeys tolerates missing .env.example when .env exists', () => {
+    const root = makeFixtureRoot();
+    fs.unlinkSync(path.join(root, '.env.example'));
+    fs.writeFileSync(path.join(root, '.env'), 'FOO=1\n');
+    runInstall(root);
+    expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toContain('SESSIONIO_TRANSPORT');
+  });
+
+  it('syncSkillToFork replaces a non-directory destination path', () => {
+    const root = makeFixtureRoot();
+    const dest = path.join(root, '.claude/skills/add-sessionio');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, 'not-a-directory');
+    const out = syncSkillToFork(root);
+    expect(fs.statSync(out).isDirectory()).toBe(true);
+    expect(fs.existsSync(path.join(out, 'SKILL.md'))).toBe(true);
   });
 });
 

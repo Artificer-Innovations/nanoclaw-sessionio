@@ -406,13 +406,12 @@ function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {
 
 export function patchContainerRunner(source: string): string {
   let content = source;
-  // Upgrade stale env stubs (wrong insert point, missing docker -e, or no NO_PROXY).
+  // Upgrade stale env stubs (wrong insert point, missing docker -e, or no shared helper).
   // Old blocks wrapped the spawn log — uninstalling them can delete that log line.
   if (
     content.includes(begin('container-runner-env')) &&
-    (!content.includes('SESSIONIO_SESSION_ID') ||
-      !content.includes("pushEnv('NO_PROXY'") ||
-      !content.includes('args.splice(insertAt'))
+    (!content.includes('injectSessionioContainerEnv') ||
+      !content.includes("from './sessionio-docker-env.js'"))
   ) {
     content = uninstallMarks(content, ['container-runner-env']);
   }
@@ -445,6 +444,15 @@ export function patchContainerRunner(source: string): string {
     ['resolveSessionTransport', 'resolveTransportName'],
     'container-runner-import',
   );
+
+  if (!content.includes(begin('container-runner-docker-env-import'))) {
+    content = installImport(
+      content,
+      './sessionio-docker-env.js',
+      ['injectSessionioContainerEnv'],
+      'container-runner-docker-env-import',
+    );
+  }
 
   if (!content.includes(begin('container-runner-meta'))) {
     content = replaceOnce(
@@ -480,55 +488,14 @@ export function patchContainerRunner(source: string): string {
   // Must insert BEFORE the image name (--entrypoint … IMAGE -c …); appending
   // would pass -e flags as bash args and they would never become container env.
   if (resolveTransportName({ agentGroupId: agentGroup.id, sessionId: session.id }) === 'http') {
-    const insertAt = (() => {
-      const idx = args.indexOf('--entrypoint');
-      return idx >= 0 ? idx : args.length;
-    })();
-    const pushEnv = (key: string, value: string | undefined) => {
-      if (value == null || value === '') return;
-      const prefix = \`\${key}=\`;
-      for (let i = 0; i < args.length - 1; i++) {
-        if (args[i] === '-e' && args[i + 1]!.startsWith(prefix)) {
-          args[i + 1] = \`\${key}=\${value}\`;
-          return;
-        }
-      }
-      args.splice(insertAt, 0, '-e', \`\${key}=\${value}\`);
-    };
-    const mergeNoProxy = (current: string | undefined, extra: string): string => {
-      const parts = new Set(
-        \`\${current ?? ''},\${extra}\`
-          .split(',')
-          .map((p) => p.trim())
-          .filter(Boolean),
-      );
-      return [...parts].join(',');
-    };
-    pushEnv('SESSIONIO_TRANSPORT', process.env.SESSIONIO_TRANSPORT ?? 'http');
-    pushEnv('SESSIONIO_BASE_URL', process.env.SESSIONIO_BASE_URL);
-    pushEnv('SESSIONIO_HTTP_TOKEN', process.env.SESSIONIO_HTTP_TOKEN);
-    pushEnv('SESSIONIO_SESSION_ID', session.id);
-    pushEnv('SESSIONIO_AGENT_GROUP_ID', agentGroup.id);
-    // Bypass OneCLI HTTP_PROXY for the host mailbox (and common loopback aliases).
-    let peerHost = 'host.docker.internal';
-    try {
-      if (process.env.SESSIONIO_BASE_URL) {
-        peerHost = new URL(process.env.SESSIONIO_BASE_URL).hostname || peerHost;
-      }
-    } catch {
-      // keep default
-    }
-    const existingNoProxy = (() => {
-      for (let i = 0; i < args.length - 1; i++) {
-        if (args[i] === '-e' && args[i + 1]!.startsWith('NO_PROXY=')) {
-          return args[i + 1]!.slice('NO_PROXY='.length);
-        }
-      }
-      return process.env.NO_PROXY;
-    })();
-    const noProxy = mergeNoProxy(existingNoProxy, \`\${peerHost},127.0.0.1,localhost\`);
-    pushEnv('NO_PROXY', noProxy);
-    pushEnv('no_proxy', noProxy);
+    injectSessionioContainerEnv(args, {
+      transport: process.env.SESSIONIO_TRANSPORT ?? 'http',
+      baseUrl: process.env.SESSIONIO_BASE_URL,
+      token: process.env.SESSIONIO_HTTP_TOKEN,
+      sessionId: session.id,
+      agentGroupId: agentGroup.id,
+      hostNoProxy: process.env.NO_PROXY,
+    });
   }`,
       )}\n${spawnLog}`,
       'container-runner spawn log',
@@ -542,6 +509,7 @@ export function uninstallContainerRunner(source: string): string {
   return uninstallMarks(source, [
     'container-runner-env',
     'container-runner-meta',
+    'container-runner-docker-env-import',
     'container-runner-import',
   ]);
 }
@@ -744,6 +712,7 @@ async function sessionioTouchHeartbeat() {
       '(await sessionioGetPendingMessages($1)).filter(',
     );
     // Sync helpers that call writeMessageOut must become async under peer mode.
+    // In stock NanoClaw these sit *after* runPollLoop (same region as the rewrites).
     if (!tail.includes('async function deliverErrorResult(')) {
       tail = tail.replace(/^function deliverErrorResult\(/m, 'async function deliverErrorResult(');
     }
@@ -763,11 +732,11 @@ async function sessionioTouchHeartbeat() {
       tail = tail.replace(/^function sendToDestination\(/m, 'async function sendToDestination(');
     }
     if (!tail.includes('await dispatchResultText(')) {
-      tail = tail.replace(/\bdispatchResultText\(/g, 'await dispatchResultText(');
-      tail = tail.replace(/\bautoAppendTaskLog\(/g, 'await autoAppendTaskLog(');
-      tail = tail.replace(/\bdeliverErrorResult\(/g, 'await deliverErrorResult(');
-      tail = tail.replace(/\bsendToDestination\(/g, 'await sendToDestination(');
-      tail = tail.replace(/await await /g, 'await ');
+      // Only call sites — do not rewrite `function deliverErrorResult(` declarations.
+      tail = tail.replace(/(?<!function )(?<!await )dispatchResultText\(/g, 'await dispatchResultText(');
+      tail = tail.replace(/(?<!function )(?<!await )autoAppendTaskLog\(/g, 'await autoAppendTaskLog(');
+      tail = tail.replace(/(?<!function )(?<!await )deliverErrorResult\(/g, 'await deliverErrorResult(');
+      tail = tail.replace(/(?<!function )(?<!await )sendToDestination\(/g, 'await sendToDestination(');
     }
     content = head + tail;
   }
@@ -798,38 +767,16 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
     agentGroupId = '';
   }
   const session = sessionRefFromEnv(process.env, agentGroupId);
-  const baseUrl = (process.env.SESSIONIO_BASE_URL ?? '').replace(/\\/+$/, '');
-  if (!baseUrl) throw new Error('SESSIONIO_BASE_URL is required in http/loopback mode');
-  const url =
-    \`\${baseUrl}/outbound?agentGroupId=\${encodeURIComponent(session.agentGroupId)}\` +
-    \`&sessionId=\${encodeURIComponent(session.sessionId)}\`;
+  const baseUrl = process.env.SESSIONIO_BASE_URL ?? '';
   const body = JSON.stringify(writeToOutboundWire(msg));
-  const args = [
-    'curl',
-    '-sS',
-    '-o',
-    '/dev/null',
-    '-w',
-    '%{http_code}',
-    '-X',
-    'POST',
-    '-H',
-    'content-type: application/json',
-  ];
-  if (process.env.SESSIONIO_HTTP_TOKEN) {
-    args.push('-H', \`Authorization: Bearer \${process.env.SESSIONIO_HTTP_TOKEN}\`);
-  }
-  args.push('-d', body, url);
-
-  const env = {
-    ...process.env,
-    HTTP_PROXY: '',
-    HTTPS_PROXY: '',
-    http_proxy: '',
-    https_proxy: '',
-    ALL_PROXY: '',
-    all_proxy: '',
-  };
+  const args = buildOutboundSyncCurlArgs({
+    baseUrl,
+    agentGroupId: session.agentGroupId,
+    sessionId: session.sessionId,
+    token: process.env.SESSIONIO_HTTP_TOKEN,
+    body,
+  });
+  const env = clearedProxyEnv(process.env);
   const proc = Bun.spawnSync(args, {
     env,
     stdout: 'pipe',
@@ -847,18 +794,26 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
 /** Route writeMessageOut through HTTP peer for MCP/agenttrace sync call sites. */
 export function patchMessagesOut(source: string): string {
   const names = ['messages-out-import', 'messages-out-helper', 'messages-out-peer'];
-  if (isFullyPatched(source, names)) return source;
-
-  // Sandbox may already have an unmarked peer bridge from earlier debugging.
-  if (
-    source.includes('function postOutboundSync(') &&
-    source.includes('getSessionioPeer()') &&
-    source.includes('return postOutboundSync(msg)')
-  ) {
+  if (isFullyPatched(source, names) && source.includes('buildOutboundSyncCurlArgs')) {
     return source;
   }
 
+  // Upgrade marked helpers that still inline curl argv (pre-outbound-sync helper).
   let content = source;
+  if (isFullyPatched(content, names) && !content.includes('buildOutboundSyncCurlArgs')) {
+    content = uninstallMessagesOut(content);
+  }
+
+  // Sandbox may already have an unmarked peer bridge that uses the shared helper.
+  if (
+    content.includes('function postOutboundSync(') &&
+    content.includes('getSessionioPeer()') &&
+    content.includes('return postOutboundSync(msg)') &&
+    content.includes('buildOutboundSyncCurlArgs') &&
+    !content.includes(begin('messages-out-peer'))
+  ) {
+    return content;
+  }
 
   if (!content.includes(begin('messages-out-import'))) {
     const firstImport = content.search(/^import /m);
@@ -866,6 +821,7 @@ export function patchMessagesOut(source: string): string {
     const block = `${begin('messages-out-import')}
 import { getSessionioPeer } from '../sessionio/register.js';
 import { sessionRefFromEnv, writeToOutboundWire } from '../sessionio/mailbox.js';
+import { buildOutboundSyncCurlArgs, clearedProxyEnv } from '../sessionio/outbound-sync.js';
 import { getConfig } from '../config.js';
 ${end('messages-out-import')}
 `;

@@ -64,9 +64,9 @@ export class HostMailboxStore {
 
   countDueInbound(session: SessionRef): number {
     const now = Date.now();
-    return (this.inbound.get(this.key(session)) ?? []).filter((message) => {
-      if (message.processAfter && Date.parse(message.processAfter) > now) return false;
-      return true;
+    return this.listInbound(session).filter((message) => {
+      if (!message.processAfter) return true;
+      return Date.parse(message.processAfter) <= now;
     }).length;
   }
 

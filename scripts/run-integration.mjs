@@ -26,6 +26,7 @@ const {
   STOCK_INDEX,
   STOCK_RUNNER_INDEX,
   STOCK_POLL_LOOP,
+  STOCK_MESSAGES_OUT,
 } = await import(pathToFileURL(path.join(root, 'dist/cli/test-fixtures.js')).href);
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionio-integration-'));
@@ -37,6 +38,7 @@ const files = {
   'src/index.ts': STOCK_INDEX,
   'container/agent-runner/src/index.ts': STOCK_RUNNER_INDEX,
   'container/agent-runner/src/poll-loop.ts': STOCK_POLL_LOOP,
+  'container/agent-runner/src/db/messages-out.ts': STOCK_MESSAGES_OUT,
   '.env.example': 'FOO=1\n',
 };
 

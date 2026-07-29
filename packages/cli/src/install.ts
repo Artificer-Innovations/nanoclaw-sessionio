@@ -77,7 +77,6 @@ export function runVerify(root?: string): { root: string; ok: boolean; issues: s
       if (file.transform(source) !== source) {
         issues.push(`${file.path} missing sessionio call sites`);
       }
-      /* v8 ignore next 6 */
     } catch (error) {
       issues.push(
         `${file.path} has invalid sessionio call sites: ${
@@ -200,7 +199,6 @@ function stageResources(
   for (const rule of rules) {
     const source = path.join(resources, rule.source);
     if (!fs.existsSync(source)) {
-      /* v8 ignore next */
       throw new Error(`Missing bundled resource: ${rule.source}. Run pnpm run build.`);
     }
     let content = fs.readFileSync(source);

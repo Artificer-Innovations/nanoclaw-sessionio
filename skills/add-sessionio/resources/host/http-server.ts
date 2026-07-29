@@ -19,7 +19,7 @@ export interface SessionioHttpServerOptions {
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
@@ -47,6 +47,22 @@ function unauthorized(res: ServerResponse): void {
   sendJson(res, 401, { error: 'unauthorized' });
 }
 
+/** Resolve Host header for request URL parsing (testable). */
+export function requestHost(header: string | string[] | undefined): string {
+  const raw = Array.isArray(header) ? header[0] : header;
+  return raw || '127.0.0.1';
+}
+
+/** Normalize request path; trailing-slash-only paths become `/`. */
+export function requestPathname(urlPath: string | undefined): string {
+  const pathOnly = (urlPath ?? '/').split('?')[0] || '/';
+  return pathOnly.replace(/\/+$/, '') || '/';
+}
+
+export function buildRequestUrl(reqUrl: string | undefined, host: string): URL {
+  return new URL(reqUrl || '/', `http://${host}`);
+}
+
 export function createSessionioHttpServer(options: SessionioHttpServerOptions = {}): http.Server {
   const store = options.store ?? globalHostMailboxStore;
   const token = options.token ?? process.env.SESSIONIO_HTTP_TOKEN ?? '';
@@ -61,9 +77,9 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
         }
       }
 
-      const host = req.headers.host ?? '127.0.0.1';
-      const url = new URL(req.url ?? '/', `http://${host}`);
-      const pathname = url.pathname.replace(/\/+$/, '') || '/';
+      const host = requestHost(req.headers.host);
+      const url = buildRequestUrl(req.url, host);
+      const pathname = requestPathname(req.url);
 
       if (req.method === 'GET' && pathname === '/health') {
         sendJson(res, 200, { ok: true });
@@ -186,11 +202,32 @@ export function createSessionioHttpServer(options: SessionioHttpServerOptions = 
   });
 }
 
+export function resolveListenHost(
+  optionsHost: string | undefined,
+  envHost: string | undefined = process.env.SESSIONIO_HTTP_HOST,
+): string {
+  return optionsHost ?? envHost ?? '127.0.0.1';
+}
+
+export function resolveListenPort(
+  optionsPort: number | undefined,
+  envPort: string | undefined = process.env.SESSIONIO_HTTP_PORT,
+): number {
+  return optionsPort ?? Number(envPort ?? '18765');
+}
+
+export function boundPortFromAddress(
+  address: string | { port: number } | null,
+  fallback: number,
+): number {
+  return typeof address === 'object' && address ? address.port : fallback;
+}
+
 export async function startSessionioHttpServer(
   options: SessionioHttpServerOptions = {},
 ): Promise<{ server: http.Server; host: string; port: number; baseUrl: string }> {
-  const host = options.host ?? process.env.SESSIONIO_HTTP_HOST ?? '127.0.0.1';
-  const port = options.port ?? Number(process.env.SESSIONIO_HTTP_PORT ?? '18765');
+  const host = resolveListenHost(options.host);
+  const port = resolveListenPort(options.port);
   const server = createSessionioHttpServer(options);
 
   await new Promise<void>((resolve, reject) => {
@@ -198,8 +235,7 @@ export async function startSessionioHttpServer(
     server.listen(port, host, () => resolve());
   });
 
-  const address = server.address();
-  const boundPort = typeof address === 'object' && address ? address.port : port;
+  const boundPort = boundPortFromAddress(server.address(), port);
   return {
     server,
     host,

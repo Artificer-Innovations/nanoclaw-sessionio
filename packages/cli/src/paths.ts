@@ -15,6 +15,8 @@ export const HOST_COPY_RULES: CopyRule[] = [
   { source: 'sessionio.ts', dest: 'src/sessionio.ts' },
   { source: 'transports.ts', dest: 'src/sessionio-transports.ts' },
   { source: 'http-server.ts', dest: 'src/sessionio-http-server.ts' },
+  { source: 'docker-env-inject.ts', dest: 'src/sessionio-docker-env.ts' },
+  { source: 'sessionio-env.ts', dest: 'src/sessionio-env.ts' },
   { source: 'sessionio-boot.ts', dest: 'src/sessionio-boot.ts' },
   { source: 'sessionio.conformance.test.ts', dest: 'src/sessionio.conformance.test.ts' },
 ];
@@ -24,6 +26,7 @@ export const RUNNER_COPY_RULES: CopyRule[] = [
   { source: 'types.ts', dest: 'container/agent-runner/src/sessionio/types.ts' },
   { source: 'peer.ts', dest: 'container/agent-runner/src/sessionio/peer.ts' },
   { source: 'mailbox.ts', dest: 'container/agent-runner/src/sessionio/mailbox.ts' },
+  { source: 'outbound-sync.ts', dest: 'container/agent-runner/src/sessionio/outbound-sync.ts' },
   { source: 'register.ts', dest: 'container/agent-runner/src/sessionio/register.ts' },
 ];
 
@@ -43,17 +46,14 @@ export function packageRoot(startDir: string = __dirname): string {
       try {
         const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8')) as { name?: string };
         if (pkg.name === 'nanoclaw-sessionio') return dir;
-        /* v8 ignore next 3 */
       } catch {
         // Malformed package.json along the way must not mask a valid root higher up.
       }
     }
     const parent = path.dirname(dir);
-    /* v8 ignore next 2 */
     if (parent === dir) break;
     dir = parent;
   }
-  /* v8 ignore next */
   throw new Error('Could not locate nanoclaw-sessionio package root');
 }
 
@@ -63,17 +63,13 @@ export function skillDir(startDir: string = __dirname): string {
 
 export function hostResourcesDir(startDir: string = __dirname): string {
   const source = path.join(packageRoot(startDir), 'packages/host/src');
-  /* v8 ignore next */
   if (fs.existsSync(path.join(source, 'sessionio.ts'))) return source;
-  /* v8 ignore next */
   return path.join(skillDir(startDir), 'resources/host');
 }
 
 export function runnerResourcesDir(startDir: string = __dirname): string {
   const source = path.join(packageRoot(startDir), 'packages/runner/src');
-  /* v8 ignore next */
   if (fs.existsSync(path.join(source, 'peer.ts'))) return source;
-  /* v8 ignore next */
   return path.join(skillDir(startDir), 'resources/runner');
 }
 
@@ -124,7 +120,12 @@ export function rewriteHostResource(filename: string, content: string): string {
       .replaceAll("from './http-server.js'", "from './sessionio-http-server.js'")
       .replaceAll("from './sessionio.js'", "from './sessionio.js'")
       .replaceAll("from './transports.js'", "from './sessionio-transports.js'")
-      .replaceAll("from './types.js'", "from './sessionio-types.js'");
+      .replaceAll("from './types.js'", "from './sessionio-types.js'")
+      .replaceAll("from './sessionio-env.js'", "from './sessionio-env.js'");
+  }
+  if (filename === 'docker-env-inject.ts') {
+    // Renamed on copy; no local imports to rewrite.
+    return next;
   }
   if (filename === 'sessionio.conformance.test.ts') {
     next = next.replaceAll("from './transports.js'", "from './sessionio-transports.js'");
