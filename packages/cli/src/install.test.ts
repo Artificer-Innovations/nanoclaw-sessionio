@@ -24,6 +24,7 @@ import {
   STOCK_RUNNER_INDEX,
   STOCK_SESSION_MANAGER,
   STOCK_MESSAGES_OUT,
+  STOCK_MCP_TOOLS_INDEX,
 } from './test-fixtures.js';
 import { findNanoclawRoot, packageRoot, rewriteHostResource } from './paths.js';
 import {
@@ -46,6 +47,7 @@ function makeFixtureRoot(): string {
     'src/container-runner.ts': STOCK_CONTAINER_RUNNER,
     'src/index.ts': STOCK_INDEX,
     'container/agent-runner/src/index.ts': STOCK_RUNNER_INDEX,
+    'container/agent-runner/src/mcp-tools/index.ts': STOCK_MCP_TOOLS_INDEX,
     'container/agent-runner/src/poll-loop.ts': STOCK_POLL_LOOP,
     'container/agent-runner/src/db/messages-out.ts': STOCK_MESSAGES_OUT,
     '.env.example': 'FOO=1\n',
@@ -216,6 +218,9 @@ describe('patches', () => {
     expect(FILE_TRANSFORMS.map((f) => f.path)).toContain('container/agent-runner/src/poll-loop.ts');
     expect(FILE_TRANSFORMS.map((f) => f.path)).toContain(
       'container/agent-runner/src/db/messages-out.ts',
+    );
+    expect(FILE_TRANSFORMS.map((f) => f.path)).toContain(
+      'container/agent-runner/src/mcp-tools/index.ts',
     );
   });
 });

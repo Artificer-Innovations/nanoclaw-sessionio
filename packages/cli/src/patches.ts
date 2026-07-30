@@ -850,6 +850,49 @@ export function uninstallRunnerIndex(source: string): string {
   return uninstallMarks(source, ['runner-register']);
 }
 
+/** Marked MCP-child peer registration (send_file / sync outbound bridge). */
+export function patchMcpToolsIndex(source: string): string {
+  const names = ['mcp-register'];
+  if (isFullyPatched(source, names)) return source;
+  let content = scavengeUnmarkedMcpSessionioRegister(source);
+  if (content.includes(begin('mcp-register'))) return content;
+
+  const firstImport = content.search(/^import /m);
+  if (firstImport < 0) throw new Error('Could not find mcp-tools import anchor');
+  const block = `${begin('mcp-register')}
+// Sessionio peer registration is optional here: writeMessageOut gates on
+// SESSIONIO_TRANSPORT via isRemotePeerMode(). Still register so peer-aware
+// call sites (if any) work inside the MCP child process.
+import { registerSessionioRunner } from '../sessionio/register.js';
+registerSessionioRunner();
+${end('mcp-register')}
+`;
+  return content.slice(0, firstImport) + block + content.slice(firstImport);
+}
+
+/**
+ * Strip unmarked MCP registerSessionioRunner boots left by pre-marker installs.
+ */
+export function scavengeUnmarkedMcpSessionioRegister(source: string): string {
+  if (source.includes(begin('mcp-register'))) return source;
+  if (!source.includes("from '../sessionio/register.js'")) return source;
+  const pattern =
+    /(?:\/\/ Sessionio peer registration is optional here:[\s\S]*?\n)?import \{ registerSessionioRunner \} from '\.\.\/sessionio\/register\.js';\r?\nregisterSessionioRunner\(\);\r?\n+/;
+  const next = source.replace(pattern, '');
+  if (next === source) {
+    throw new Error(
+      'Could not scavenge unmarked mcp-tools registerSessionioRunner (present but pattern mismatch)',
+    );
+  }
+  return next;
+}
+
+export function uninstallMcpToolsIndex(source: string): string {
+  let content = uninstallMarks(source, ['mcp-register']);
+  content = scavengeUnmarkedMcpSessionioRegister(content);
+  return content;
+}
+
 export function patchPollLoop(source: string): string {
   let content = source;
   // Upgrade stub that only declared __sessionioPeer without wiring IO,
@@ -865,11 +908,17 @@ export function patchPollLoop(source: string): string {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
     content = content.replace(/\bawait sessionioGetPendingMessages\(/g, 'getPendingMessages(');
+    content = content.replace(/\bsessionioGetPendingMessages\(/g, 'getPendingMessages(');
     content = content.replace(/\bawait sessionioWriteMessageOut\(/g, 'writeMessageOut(');
+    content = content.replace(/\bsessionioWriteMessageOut\(/g, 'writeMessageOut(');
     content = content.replace(/\bawait sessionioMarkProcessing\(/g, 'markProcessing(');
+    content = content.replace(/\bsessionioMarkProcessing\(/g, 'markProcessing(');
     content = content.replace(/\bawait sessionioMarkCompleted\(/g, 'markCompleted(');
+    content = content.replace(/\bsessionioMarkCompleted\(/g, 'markCompleted(');
     content = content.replace(/\bawait sessionioMarkScriptSkipped\(/g, 'markScriptSkipped(');
+    content = content.replace(/\bsessionioMarkScriptSkipped\(/g, 'markScriptSkipped(');
     content = content.replace(/\bawait sessionioTouchHeartbeat\(/g, 'touchHeartbeat(');
+    content = content.replace(/\bsessionioTouchHeartbeat\(/g, 'touchHeartbeat(');
     content = content.replace(
       /\(await getPendingMessages\(([^)]*)\)\)\.filter\(/g,
       'getPendingMessages($1).filter(',
@@ -1129,12 +1178,25 @@ async function sessionioTouchHeartbeat() {
 
 export function uninstallPollLoop(source: string): string {
   let content = uninstallMarks(source, ['poll-loop-peer', 'poll-loop-peer-import']);
-  content = content.replace(/\bawait sessionioGetPendingMessages\(/g, 'getPendingMessages(');
-  content = content.replace(/\bawait sessionioWriteMessageOut\(/g, 'writeMessageOut(');
-  content = content.replace(/\bawait sessionioMarkProcessing\(/g, 'markProcessing(');
-  content = content.replace(/\bawait sessionioMarkCompleted\(/g, 'markCompleted(');
-  content = content.replace(/\bawait sessionioMarkScriptSkipped\(/g, 'markScriptSkipped(');
-  content = content.replace(/\bawait sessionioTouchHeartbeat\(/g, 'touchHeartbeat(');
+  // Restore stock call sites. Match both `await sessionioX(` (normal install)
+  // and bare `sessionioX(` / `return sessionioX(...).then(...)` leftovers from
+  // partial uninstalls or hand-edited async wrappers.
+  const wrappers: Array<[string, string]> = [
+    ['sessionioGetPendingMessages', 'getPendingMessages'],
+    ['sessionioWriteMessageOut', 'writeMessageOut'],
+    ['sessionioMarkProcessing', 'markProcessing'],
+    ['sessionioMarkCompleted', 'markCompleted'],
+    ['sessionioMarkScriptSkipped', 'markScriptSkipped'],
+    ['sessionioTouchHeartbeat', 'touchHeartbeat'],
+  ];
+  for (const [from, to] of wrappers) {
+    content = content.replace(new RegExp(`\\bawait ${from}\\(`, 'g'), `${to}(`);
+    content = content.replace(new RegExp(`\\b${from}\\(`, 'g'), `${to}(`);
+  }
+  content = content.replace(
+    /return writeMessageOut\((\{[\s\S]*?\n  \})\)\.then\(\(\) => undefined\);/g,
+    'writeMessageOut($1);',
+  );
   return content;
 }
 
@@ -1404,6 +1466,11 @@ export const FILE_TRANSFORMS: FileTransform[] = [
     path: 'container/agent-runner/src/index.ts',
     transform: patchRunnerIndex,
     uninstall: uninstallRunnerIndex,
+  },
+  {
+    path: 'container/agent-runner/src/mcp-tools/index.ts',
+    transform: patchMcpToolsIndex,
+    uninstall: uninstallMcpToolsIndex,
   },
   {
     path: 'container/agent-runner/src/poll-loop.ts',

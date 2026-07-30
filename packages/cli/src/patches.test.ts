@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   patchContainerRunner,
   patchIndex,
+  patchMcpToolsIndex,
   patchMessagesOut,
   patchPollLoop,
   patchRunnerIndex,
@@ -9,9 +10,11 @@ import {
   uninstallContainerRunner,
   uninstallDelivery,
   uninstallIndex,
+  uninstallMcpToolsIndex,
   uninstallMessagesOut,
   uninstallPollLoop,
   uninstallSessionManager,
+  scavengeUnmarkedMcpSessionioRegister,
 } from './patches.js';
 import {
   STOCK_CONTAINER_RUNNER,
@@ -244,6 +247,42 @@ function sessionioPeer() {
     expect(patched).toMatch(
       /async function deliverErrorResult[\s\S]*await sessionioWriteMessageOut\(/,
     );
+  });
+
+  it('uninstall scavenges bare sessionioWriteMessageOut leftovers without await', () => {
+    const leftover = `async function deliverErrorResult(text: string): Promise<void> {
+  return sessionioWriteMessageOut({
+    id: 'x',
+    content: JSON.stringify({ text }),
+  }).then(() => undefined);
+}
+`;
+    const cleaned = uninstallPollLoop(leftover);
+    expect(cleaned).not.toContain('sessionioWriteMessageOut');
+    expect(cleaned).toContain('writeMessageOut({');
+    expect(cleaned).not.toContain('.then(() => undefined)');
+  });
+
+  it('patches mcp-tools register and scavenges unmarked boots', () => {
+    const stock = `import './core.js';
+import { startMcpServer } from './server.js';
+`;
+    const patched = patchMcpToolsIndex(stock);
+    expect(patched).toContain('@nanoclaw-sessionio:mcp-register:begin');
+    expect(patched).toContain('registerSessionioRunner');
+    expect(patchMcpToolsIndex(patched)).toBe(patched);
+    expect(uninstallMcpToolsIndex(patched)).not.toContain('registerSessionioRunner');
+
+    const unmarked = `// Sessionio peer registration is optional here: writeMessageOut gates on
+// SESSIONIO_TRANSPORT via isRemotePeerMode(). Still register so peer-aware
+// call sites (if any) work inside the MCP child process.
+import { registerSessionioRunner } from '../sessionio/register.js';
+registerSessionioRunner();
+
+import './core.js';
+`;
+    expect(scavengeUnmarkedMcpSessionioRegister(unmarked)).not.toContain('registerSessionioRunner');
+    expect(uninstallMcpToolsIndex(unmarked)).not.toContain('registerSessionioRunner');
   });
 
   it('patches messages-out peer bridge through outbound-sync helpers', () => {

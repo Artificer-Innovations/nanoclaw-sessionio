@@ -254,6 +254,19 @@ async function main() {
 void main();
 `;
 
+export const STOCK_MCP_TOOLS_INDEX = `/**
+ * MCP tools barrel — imports each tool module for its side-effect
+ * \`registerTools([...])\` call, then starts the MCP server.
+ */
+import './core.js';
+import { startMcpServer } from './server.js';
+
+startMcpServer().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+`;
+
 export const STOCK_POLL_LOOP = `import { getPendingMessages, markProcessing, markCompleted, markScriptSkipped } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { touchHeartbeat } from './db/connection.js';
