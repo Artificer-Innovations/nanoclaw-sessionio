@@ -346,6 +346,35 @@ export function writeMessageOut(msg: { id: string }): number {
     expect(patchMessagesOut(unmarked)).toBe(unmarked);
   });
 
+  it('upgrades legacy unmarked peer bridge without duplicating postOutboundSync', () => {
+    const legacy = `import { getConfig } from '../config.js';
+import { getSessionioPeer } from '../sessionio/register.js';
+
+function postOutboundSync(msg: WriteMessageOut): number {
+  const peer = getSessionioPeer();
+  if (!peer) throw new Error('no peer');
+  void peer.stageOutbox;
+  return 0;
+}
+
+export function writeMessageOut(msg: WriteMessageOut): number {
+  if (getSessionioPeer()) {
+    return postOutboundSync(msg);
+  }
+  const outbound = getOutboundDb();
+  return 1;
+}
+`;
+    const upgraded = patchMessagesOut(legacy);
+    expect(upgraded.match(/function postOutboundSync\(/g)).toHaveLength(1);
+    expect(upgraded).toContain('@nanoclaw-sessionio:messages-out-helper:begin');
+    expect(upgraded).toContain('isRemotePeerMode()');
+    expect(upgraded).toContain('buildOutboxSyncCurlArgs');
+    expect(upgraded).not.toContain('peer.stageOutbox');
+    // Legacy unmarked gate removed; marked gate is the only remaining call site.
+    expect(upgraded.match(/return postOutboundSync\(msg\);/g)).toHaveLength(1);
+  });
+
   it('throws when messages-out / index anchors are missing', () => {
     expect(() => patchMessagesOut('export const nope = 1;\n')).toThrow(/import anchor/);
     expect(() => patchMessagesOut(`import x from 'y';\nexport function other() {}\n`)).toThrow(

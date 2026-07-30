@@ -1133,6 +1133,16 @@ export function patchMessagesOut(source: string): string {
     return content;
   }
 
+  // Legacy unmarked bridges (getSessionioPeer / stageOutbox / missing outbox-first)
+  // must be removed before we inject the marked helper — otherwise TS sees two
+  // `function postOutboundSync` declarations in the same module.
+  if (
+    content.includes('function postOutboundSync(') &&
+    !content.includes(begin('messages-out-helper'))
+  ) {
+    content = stripUnmarkedMessagesOutBridge(content);
+  }
+
   if (!content.includes(begin('messages-out-import'))) {
     const firstImport = content.search(/^import /m);
     if (firstImport < 0) throw new Error('Could not find import anchor for messages-out-import');
@@ -1181,6 +1191,41 @@ ${marked(
   }
 
   return content;
+}
+
+/**
+ * Remove a hand-maintained (unmarked) postOutboundSync + peer gate so the
+ * marked installer can re-inject without duplicate declarations.
+ */
+function stripUnmarkedMessagesOutBridge(source: string): string {
+  let content = source;
+  content = content.replace(
+    /^[ \t]*if \((?:getSessionioPeer|isRemotePeerMode)\(\)\) \{\n[ \t]*return postOutboundSync\(msg\);\n[ \t]*\}\n?/gm,
+    '',
+  );
+
+  const start = content.search(/^function postOutboundSync\(/m);
+  /* v8 ignore next — gate-only leftovers after strip; callers require a function */
+  if (start < 0) return content;
+  const braceOpen = content.indexOf('{', start);
+  /* v8 ignore next — malformed signatures without a body */
+  if (braceOpen < 0) return content;
+  let depth = 0;
+  let i = braceOpen;
+  for (; i < content.length; i += 1) {
+    const ch = content[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        i += 1;
+        break;
+      }
+    }
+  }
+  let end = i;
+  while (content[end] === '\n') end += 1;
+  return content.slice(0, start) + content.slice(end);
 }
 
 export function uninstallMessagesOut(source: string): string {
