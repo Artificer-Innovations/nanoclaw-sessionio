@@ -21,11 +21,14 @@ describe('outbound-sync (MCP writeMessageOut → HTTP)', () => {
     expect(args).toContain('--max-time');
     expect(args).toContain('15');
     expect(args).toContain('Authorization: Bearer secret');
+    expect(args).toContain('--data-binary');
+    expect(args).toContain('@-');
     const url = args.at(-1)!;
     expect(url).toContain('/outbound?agentGroupId=ag');
     expect(url).toContain('sessionId=s1');
     expect(url).not.toMatch(/\/$/);
-    expect(args.at(-2)).toBe('{"id":"o1"}');
+    // Body stays out of argv (piped via stdin) to avoid ARG_MAX on attachments.
+    expect(args).not.toContain('{"id":"o1"}');
   });
 
   it('requires base URL', () => {

@@ -1030,49 +1030,51 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
 
   // Stage attachments FIRST. If we POST /outbound before /outbox, the host
   // delivery poll can consume the message with an empty mailbox and drop files.
+  let filenames: string[] = [];
   try {
     const parsed = JSON.parse(msg.content) as { files?: unknown };
-    const filenames = Array.isArray(parsed.files)
+    filenames = Array.isArray(parsed.files)
       ? parsed.files.filter((f): f is string => typeof f === 'string')
       : [];
-    if (filenames.length > 0) {
-      const fsSync = require('node:fs') as typeof import('node:fs');
-      const files: Array<{ name: string; data: string }> = [];
-      for (const name of filenames) {
-        const filePath = \`/workspace/outbox/\${msg.id}/\${name}\`;
-        try {
-          if (fsSync.existsSync(filePath) && fsSync.statSync(filePath).isFile()) {
-            files.push({ name, data: fsSync.readFileSync(filePath).toString('base64') });
-          }
-        } catch {
-          // skip missing attachment
+  } catch {
+    // Malformed content — still allow text-only outbound below.
+  }
+  if (filenames.length > 0) {
+    const fsSync = require('node:fs') as typeof import('node:fs');
+    const files: Array<{ name: string; data: string }> = [];
+    for (const name of filenames) {
+      const filePath = \`/workspace/outbox/\${msg.id}/\${name}\`;
+      try {
+        if (fsSync.existsSync(filePath) && fsSync.statSync(filePath).isFile()) {
+          files.push({ name, data: fsSync.readFileSync(filePath).toString('base64') });
         }
-      }
-      if (files.length > 0) {
-        const outboxArgs = buildOutboxSyncCurlArgs({
-          baseUrl,
-          agentGroupId: session.agentGroupId,
-          sessionId: session.sessionId,
-          token: process.env.SESSIONIO_HTTP_TOKEN,
-          body: JSON.stringify({ messageId: msg.id, files }),
-        });
-        const outboxProc = Bun.spawnSync(outboxArgs, {
-          env,
-          stdout: 'pipe',
-          stderr: 'pipe',
-        });
-        const outboxCode = Number(outboxProc.stdout.toString().trim());
-        if (outboxProc.exitCode !== 0 || (outboxCode !== 200 && outboxCode !== 204)) {
-          const err = outboxProc.stderr.toString().trim();
-          throw new Error(
-            \`sessionio stageOutbox failed: http=\${outboxCode} exit=\${outboxProc.exitCode} \${err}\`,
-          );
-        }
+      } catch {
+        // skip missing attachment
       }
     }
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith('sessionio stageOutbox failed')) throw err;
-    // JSON parse / missing files — still allow text-only outbound.
+    if (files.length > 0) {
+      const outboxBody = JSON.stringify({ messageId: msg.id, files });
+      const outboxArgs = buildOutboxSyncCurlArgs({
+        baseUrl,
+        agentGroupId: session.agentGroupId,
+        sessionId: session.sessionId,
+        token: process.env.SESSIONIO_HTTP_TOKEN,
+        body: outboxBody,
+      });
+      const outboxProc = Bun.spawnSync(outboxArgs, {
+        env,
+        stdin: outboxBody,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const outboxCode = Number(outboxProc.stdout.toString().trim());
+      if (outboxProc.exitCode !== 0 || (outboxCode !== 200 && outboxCode !== 204)) {
+        const err = outboxProc.stderr.toString().trim();
+        throw new Error(
+          \`sessionio stageOutbox failed: http=\${outboxCode} exit=\${outboxProc.exitCode} \${err}\`,
+        );
+      }
+    }
   }
 
   const body = JSON.stringify(writeToOutboundWire(msg));
@@ -1085,6 +1087,7 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
   });
   const proc = Bun.spawnSync(args, {
     env,
+    stdin: body,
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -1104,19 +1107,23 @@ export function patchMessagesOut(source: string): string {
     isFullyPatched(source, names) &&
     source.includes('buildOutboundSyncCurlArgs') &&
     source.includes('buildOutboxSyncCurlArgs') &&
-    source.includes('isRemotePeerMode()')
+    source.includes('isRemotePeerMode()') &&
+    source.includes('stdin: outboxBody') &&
+    source.includes('stdin: body')
   ) {
     return source;
   }
 
   // Upgrade marked helpers that still gate on getSessionioPeer (MCP child has no peer),
-  // inline curl argv, or post outbound without staging outbox attachments first.
+  // inline curl argv / -d body, or post outbound without staging outbox attachments first.
   let content = source;
   if (
     isFullyPatched(content, names) &&
     (!content.includes('buildOutboundSyncCurlArgs') ||
       !content.includes('buildOutboxSyncCurlArgs') ||
-      !content.includes('isRemotePeerMode()'))
+      !content.includes('isRemotePeerMode()') ||
+      !content.includes('stdin: outboxBody') ||
+      !content.includes('stdin: body'))
   ) {
     content = uninstallMessagesOut(content);
   }
@@ -1128,6 +1135,7 @@ export function patchMessagesOut(source: string): string {
     content.includes('return postOutboundSync(msg)') &&
     content.includes('buildOutboundSyncCurlArgs') &&
     content.includes('buildOutboxSyncCurlArgs') &&
+    content.includes('stdin: body') &&
     !content.includes(begin('messages-out-peer'))
   ) {
     return content;

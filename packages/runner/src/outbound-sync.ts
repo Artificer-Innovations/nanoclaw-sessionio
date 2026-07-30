@@ -42,7 +42,8 @@ function baseCurlArgs(options: OutboundSyncCurlOptions, pathAndQuery: string): s
   if (options.token) {
     args.push('-H', `Authorization: Bearer ${options.token}`);
   }
-  args.push('-d', options.body, url);
+  // Pipe JSON via stdin — attachment base64 must not land in argv (ARG_MAX / ps).
+  args.push('--data-binary', '@-', url);
   return args;
 }
 

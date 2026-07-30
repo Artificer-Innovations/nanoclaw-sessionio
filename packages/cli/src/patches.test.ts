@@ -318,6 +318,17 @@ export async function wakeContainer(agentGroup: { id: string; name: string }, se
     expect(upgraded).toContain('buildOutboxSyncCurlArgs');
   });
 
+  it('upgrades marked messages-out that still put JSON body in curl argv', () => {
+    const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
+    expect(patched).toContain('stdin: body');
+    const staleOutbox = patched.replaceAll('stdin: outboxBody', '/* no stdin outbox */');
+    expect(patchMessagesOut(staleOutbox)).toContain('stdin: outboxBody');
+    const staleBody = patched.replaceAll('stdin: body', '/* no stdin body */');
+    expect(staleBody).toContain('stdin: outboxBody');
+    expect(staleBody).not.toContain('stdin: body');
+    expect(patchMessagesOut(staleBody)).toContain('stdin: body');
+  });
+
   it('upgrades marked messages-out that only lacks isRemotePeerMode gate', () => {
     const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
     const stale = patched.replaceAll('isRemotePeerMode()', 'getSessionioPeer()');
@@ -336,6 +347,8 @@ function postOutboundSync(msg: { id: string }): number {
   void buildOutboundSyncCurlArgs;
   void buildOutboxSyncCurlArgs;
   void isRemotePeerMode();
+  const body = '{}';
+  void Bun.spawnSync([], { stdin: body });
   return 0;
 }
 
