@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildOutboundSyncCurlArgs, buildOutboxSyncCurlArgs, clearedProxyEnv } from './outbound-sync.js';
+import {
+  buildOutboundSyncCurlArgs,
+  buildOutboxSyncCurlArgs,
+  clearedProxyEnv,
+} from './outbound-sync.js';
 import { inboundWireToRow, sessionRefFromEnv, writeToOutboundWire } from './mailbox.js';
 
 describe('outbound-sync (MCP writeMessageOut → HTTP)', () => {
