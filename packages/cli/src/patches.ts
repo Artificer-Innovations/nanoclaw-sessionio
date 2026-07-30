@@ -360,7 +360,7 @@ const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Pr
 }`;
 
 export function patchDelivery(source: string): string {
-  const names = ['delivery-import', 'delivery-drain'];
+  const names = ['delivery-import', 'delivery-drain', 'delivery-outbox'];
   let content = source;
   // Upgrade prior patch that continued with inDb=null / type-asserted deliverMessage.
   if (
@@ -369,7 +369,15 @@ export function patchDelivery(source: string): string {
   ) {
     content = uninstallDelivery(content);
   }
-  if (isFullyPatched(content, names)) return content;
+  // Upgrade installs that have drain/import but not the marked delivery-outbox,
+  // or that still carry an unmarked consumeOutbox hotfix body.
+  if (
+    isFullyPatched(content, ['delivery-import', 'delivery-drain']) &&
+    !content.includes(begin('delivery-outbox'))
+  ) {
+    content = uninstallDelivery(content);
+  }
+  if (isFullyPatched(content, names) && content.includes('consumeOutbox')) return content;
 
   content = installImport(
     content,
@@ -385,18 +393,136 @@ export function patchDelivery(source: string): string {
     'delivery drainSession',
   );
 
+  content = scavengeUnmarkedDeliveryOutbox(content);
+  if (!content.includes(begin('delivery-outbox'))) {
+    content = replaceOnce(
+      content,
+      STOCK_DELIVERY_OUTBOX,
+      marked('delivery-outbox', PATCHED_DELIVERY_OUTBOX),
+      'delivery outbox attachment staging',
+    );
+  }
+
   return content;
 }
 
 export function uninstallDelivery(source: string): string {
-  let content = uninstallMarks(source, ['delivery-drain', 'delivery-import']);
+  let content = uninstallMarks(source, ['delivery-outbox', 'delivery-drain', 'delivery-import']);
+  content = scavengeUnmarkedDeliveryOutbox(content);
   if (!content.includes('async function drainSession(session: Session): Promise<void>')) {
     const anchor = 'async function deliverMessage(';
     const idx = content.indexOf(anchor);
     if (idx < 0) throw new Error('Could not restore drainSession: deliverMessage anchor missing');
     content = `${content.slice(0, idx)}${STOCK_DRAIN_SESSION}\n\n${content.slice(idx)}`;
   }
+  // Marked delivery-outbox removal deletes the whole block — put stock back.
+  if (
+    !content.includes('readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files')
+  ) {
+    const anchors = [
+      '// @nanoclaw-hosthooks:delivery-transform:begin',
+      '  const deliverContent =',
+      '  const platformMsgId = await deliveryAdapter.deliver(',
+      '  void files;',
+    ];
+    let inserted = false;
+    for (const anchor of anchors) {
+      const idx = content.indexOf(anchor);
+      if (idx >= 0) {
+        content = `${content.slice(0, idx)}${STOCK_DELIVERY_OUTBOX}\n${content.slice(idx)}`;
+        inserted = true;
+        break;
+      }
+    }
+    if (!inserted) {
+      throw new Error('Could not restore stock delivery outbox after uninstall');
+    }
+  }
   return content;
+}
+
+/** Stock NanoClaw outbox read (filesystem mount only). */
+export const STOCK_DELIVERY_OUTBOX = `  // Read file attachments from outbox if the content declares files.
+  // File I/O lives in session-manager.ts (symmetric with inbound
+  // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+  const files =
+    Array.isArray(content.files) && content.files.length > 0
+      ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
+      : undefined;
+`;
+
+/** HTTP/loopback: consume staged mailbox bytes, then fall back to disk. */
+export const PATCHED_DELIVERY_OUTBOX = `  // Read file attachments from outbox if the content declares files.
+  // HTTP/loopback agents stage bytes on the host mailbox (no shared mount);
+  // filesystem agents write under the session outbox dir. Prefer the transport
+  // store, then fall back to disk for stock mounts.
+  let files: OutboundFile[] | undefined;
+  if (Array.isArray(content.files) && content.files.length > 0) {
+    const transport = resolveSessionTransport({
+      agentGroupId: session.agent_group_id,
+      sessionId: session.id,
+    });
+    const sessionRef = {
+      agentGroupId: session.agent_group_id,
+      sessionId: session.id,
+    };
+    // Brief retry: MCP used to POST /outbound before /outbox; give staging a
+    // moment so we don't deliver a declared attachment as text-only.
+    let fromMailbox: OutboundFile[] = [];
+    for (let attempt = 0; attempt < 5 && fromMailbox.length === 0; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 150));
+      const staged = await Promise.resolve(transport.consumeOutbox(sessionRef, msg.id));
+      fromMailbox = staged
+        .filter(
+          (f): f is { name: string; data: string } =>
+            typeof f.name === 'string' &&
+            f.name.length > 0 &&
+            typeof f.data === 'string',
+        )
+        .map((f) => ({
+          filename: f.name,
+          data: Buffer.from(f.data, 'base64'),
+        }));
+    }
+    files =
+      fromMailbox.length > 0
+        ? fromMailbox
+        : readOutboxFiles(
+            session.agent_group_id,
+            session.id,
+            msg.id,
+            content.files as string[],
+          );
+    if (!files || files.length === 0) {
+      log.warn('Outbound declared files but none were staged or on disk', {
+        messageId: msg.id,
+        sessionId: session.id,
+        declared: content.files,
+      });
+    }
+  }
+`;
+
+/**
+ * Replace unmarked consumeOutbox attachment blocks (manual hotfixes) with stock
+ * readOutboxFiles. No-op when the marked delivery-outbox block is present.
+ */
+export function scavengeUnmarkedDeliveryOutbox(source: string): string {
+  if (source.includes(begin('delivery-outbox'))) return source;
+  if (!source.includes('consumeOutbox')) {
+    // Ensure stock block exists when someone deleted it entirely after a bad uninstall.
+    return source;
+  }
+  // Match from the outbox comment through the end of the files if-block.
+  const pattern =
+    /  \/\/ Read file attachments from outbox if the content declares files\.\r?\n(?:  \/\/[^\n]*\r?\n)*  let files: OutboundFile\[\] \| undefined;\r?\n  if \(Array\.isArray\(content\.files\) && content\.files\.length > 0\) \{[\s\S]*?consumeOutbox[\s\S]*?\n  \}\r?\n/;
+  const next = source.replace(pattern, STOCK_DELIVERY_OUTBOX);
+  if (next === source) {
+    throw new Error(
+      'Could not scavenge unmarked delivery outbox (consumeOutbox present but pattern mismatch)',
+    );
+  }
+  return next;
 }
 
 export function patchHostSweep(source: string): string {

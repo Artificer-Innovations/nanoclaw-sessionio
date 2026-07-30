@@ -101,12 +101,83 @@ describe('patches', () => {
     const patched = patchDelivery(STOCK_DELIVERY);
     expect(patched).toContain('resolveSessionTransport');
     expect(patched).toContain('@nanoclaw-sessionio:delivery-drain:begin');
+    expect(patched).toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    expect(patched).toContain('consumeOutbox');
     expect(patched).toContain('inbound DB unavailable');
     expect(patched).not.toContain('inDb as Database.Database');
     expect(patchDelivery(patched)).toBe(patched);
     const restored = uninstallDelivery(patched);
     expect(restored).toContain('outDb.close()');
+    expect(restored).toContain('readOutboxFiles(session.agent_group_id, session.id, msg.id');
+    expect(restored).not.toContain('consumeOutbox');
     expect(restored).not.toContain('@nanoclaw-sessionio:delivery-drain:begin');
+    expect(restored).not.toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    expect(restored).not.toContain('resolveSessionTransport');
+  });
+
+  it('scavenges unmarked consumeOutbox hotfix on uninstall', () => {
+    const unmarked = STOCK_DELIVERY.replace(
+      `  // Read file attachments from outbox if the content declares files.
+  // File I/O lives in session-manager.ts (symmetric with inbound
+  // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+  const files =
+    Array.isArray(content.files) && content.files.length > 0
+      ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
+      : undefined;`,
+      `  // Read file attachments from outbox if the content declares files.
+  // HTTP/loopback agents stage bytes on the host mailbox (no shared mount);
+  // filesystem agents write under the session outbox dir. Prefer the transport
+  // store, then fall back to disk for stock mounts.
+  let files: OutboundFile[] | undefined;
+  if (Array.isArray(content.files) && content.files.length > 0) {
+    const transport = resolveSessionTransport({
+      agentGroupId: session.agent_group_id,
+      sessionId: session.id,
+    });
+    const sessionRef = {
+      agentGroupId: session.agent_group_id,
+      sessionId: session.id,
+    };
+    let fromMailbox: OutboundFile[] = [];
+    for (let attempt = 0; attempt < 5 && fromMailbox.length === 0; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 150));
+      const staged = await Promise.resolve(transport.consumeOutbox(sessionRef, msg.id));
+      fromMailbox = staged
+        .filter(
+          (f): f is { name: string; data: string } =>
+            typeof f.name === 'string' &&
+            f.name.length > 0 &&
+            typeof f.data === 'string',
+        )
+        .map((f) => ({
+          filename: f.name,
+          data: Buffer.from(f.data, 'base64'),
+        }));
+    }
+    files =
+      fromMailbox.length > 0
+        ? fromMailbox
+        : readOutboxFiles(
+            session.agent_group_id,
+            session.id,
+            msg.id,
+            content.files as string[],
+          );
+    if (!files || files.length === 0) {
+      log.warn('Outbound declared files but none were staged or on disk', {
+        messageId: msg.id,
+        sessionId: session.id,
+        declared: content.files,
+      });
+    }
+  }`,
+    );
+    expect(unmarked).toContain('consumeOutbox');
+    expect(unmarked).not.toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    const restored = uninstallDelivery(unmarked);
+    expect(restored).toContain('readOutboxFiles(session.agent_group_id, session.id, msg.id');
+    expect(restored).not.toContain('consumeOutbox');
+    expect(restored).not.toContain('resolveSessionTransport');
   });
 
   it('upgrades stale delivery drain that continued with inDb=null', () => {

@@ -15,7 +15,8 @@ pnpm run build
 
 ## What uninstall removes
 
-- `@nanoclaw-sessionio:*` marker blocks in session-manager, delivery, host-sweep, container-runner, index, runner index, poll-loop
+- `@nanoclaw-sessionio:*` marker blocks in session-manager, delivery (`delivery-import`, `delivery-drain`, `delivery-outbox`), host-sweep, container-runner, index, runner index, poll-loop, messages-out
+- Unmarked legacy `consumeOutbox` attachment blocks in `src/delivery.ts` (scavenged back to stock `readOutboxFiles`)
 - Copied modules under `src/sessionio*.ts`, `src/warn-once-sessionio.ts`, runner `sessionio/`
 - `.claude/skills/add-sessionio/`
 

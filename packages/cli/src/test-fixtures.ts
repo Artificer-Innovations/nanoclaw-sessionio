@@ -147,14 +147,32 @@ async function drainSession(session: Session): Promise<void> {
 }
 
 async function deliverMessage(
-  msg: unknown,
+  msg: { id: string; content: string },
   session: Session,
   inDb: Database.Database,
 ): Promise<string | null> {
-  void msg;
-  void session;
   void inDb;
+  const content = JSON.parse(msg.content) as { files?: string[] };
+
+  // Read file attachments from outbox if the content declares files.
+  // File I/O lives in session-manager.ts (symmetric with inbound
+  // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+  const files =
+    Array.isArray(content.files) && content.files.length > 0
+      ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
+      : undefined;
+
+  void files;
   return null;
+}
+
+function readOutboxFiles(
+  _agentGroupId: string,
+  _sessionId: string,
+  _messageId: string,
+  _names: string[],
+): Array<{ filename: string; data: Buffer }> {
+  return [];
 }
 `;
 
