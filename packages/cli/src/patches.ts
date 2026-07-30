@@ -855,6 +855,7 @@ export function patchMcpToolsIndex(source: string): string {
   const names = ['mcp-register'];
   if (isFullyPatched(source, names)) return source;
   let content = scavengeUnmarkedMcpSessionioRegister(source);
+  /* v8 ignore next — scavenge returns early when marked; isFullyPatched already handled that */
   if (content.includes(begin('mcp-register'))) return content;
 
   const firstImport = content.search(/^import /m);

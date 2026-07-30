@@ -9,6 +9,8 @@ import {
   patchIndex,
   patchRunnerIndex,
   patchSessionManager,
+  scavengeUnmarkedDeliveryOutbox,
+  STOCK_DELIVERY_OUTBOX,
   uninstallDelivery,
   uninstallHostSweep,
   uninstallIndex,
@@ -180,6 +182,41 @@ describe('patches', () => {
     expect(restored).toContain('readOutboxFiles(session.agent_group_id, session.id, msg.id');
     expect(restored).not.toContain('consumeOutbox');
     expect(restored).not.toContain('resolveSessionTransport');
+  });
+
+  it('upgrades installs that have drain/import but lack delivery-outbox', () => {
+    const good = patchDelivery(STOCK_DELIVERY);
+    const withoutOutbox = good.replace(
+      /\/\/ @nanoclaw-sessionio:delivery-outbox:begin[\s\S]*?\/\/ @nanoclaw-sessionio:delivery-outbox:end\r?\n?/,
+      STOCK_DELIVERY_OUTBOX,
+    );
+    expect(withoutOutbox).toContain('@nanoclaw-sessionio:delivery-import:begin');
+    expect(withoutOutbox).toContain('@nanoclaw-sessionio:delivery-drain:begin');
+    expect(withoutOutbox).not.toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    const upgraded = patchDelivery(withoutOutbox);
+    expect(upgraded).toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    expect(upgraded).toContain('consumeOutbox');
+  });
+
+  it('uninstallDelivery throws when stock outbox cannot be restored', () => {
+    const markedOnly = `// @nanoclaw-sessionio:delivery-outbox:begin
+  let files: OutboundFile[] | undefined;
+// @nanoclaw-sessionio:delivery-outbox:end
+async function deliverMessage(): Promise<void> {}
+async function drainSession(session: Session): Promise<void> { void session; }
+`;
+    expect(() => uninstallDelivery(markedOnly)).toThrow(/Could not restore stock delivery outbox/);
+  });
+
+  it('scavengeUnmarkedDeliveryOutbox throws on pattern mismatch', () => {
+    expect(() => scavengeUnmarkedDeliveryOutbox('const x = consumeOutbox;\n')).toThrow(
+      /Could not scavenge unmarked delivery outbox/,
+    );
+  });
+
+  it('scavengeUnmarkedDeliveryOutbox is a no-op when delivery-outbox is marked', () => {
+    const marked = patchDelivery(STOCK_DELIVERY);
+    expect(scavengeUnmarkedDeliveryOutbox(marked)).toBe(marked);
   });
 
   it('upgrades stale delivery drain that continued with inDb=null', () => {

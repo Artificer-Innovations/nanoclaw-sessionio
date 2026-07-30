@@ -285,6 +285,23 @@ import './core.js';
     expect(uninstallMcpToolsIndex(unmarked)).not.toContain('registerSessionioRunner');
   });
 
+  it('patchMcpToolsIndex throws without an import anchor', () => {
+    expect(() => patchMcpToolsIndex('export {};\n')).toThrow(/mcp-tools import anchor/);
+  });
+
+  it('scavengeUnmarkedMcpSessionioRegister throws on pattern mismatch', () => {
+    expect(() =>
+      scavengeUnmarkedMcpSessionioRegister(
+        "import { registerSessionioRunner } from '../sessionio/register.js';\n",
+      ),
+    ).toThrow(/Could not scavenge unmarked mcp-tools/);
+  });
+
+  it('scavengeUnmarkedMcpSessionioRegister is a no-op when mcp-register is marked', () => {
+    const marked = patchMcpToolsIndex(`import './core.js';\n`);
+    expect(scavengeUnmarkedMcpSessionioRegister(marked)).toBe(marked);
+  });
+
   it('patches messages-out peer bridge through outbound-sync helpers', () => {
     const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
     expect(patched).toContain('postOutboundSync');
