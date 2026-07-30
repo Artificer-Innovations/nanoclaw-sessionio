@@ -15,13 +15,10 @@ export interface OutboundSyncCurlOptions {
   maxTimeSec?: number;
 }
 
-/** Build curl argv for a synchronous outbound POST (no trailing slash on baseUrl required). */
-export function buildOutboundSyncCurlArgs(options: OutboundSyncCurlOptions): string[] {
+function baseCurlArgs(options: OutboundSyncCurlOptions, pathAndQuery: string): string[] {
   const baseUrl = options.baseUrl.replace(/\/+$/, '');
   if (!baseUrl) throw new Error('SESSIONIO_BASE_URL is required in http/loopback mode');
-  const url =
-    `${baseUrl}/outbound?agentGroupId=${encodeURIComponent(options.agentGroupId)}` +
-    `&sessionId=${encodeURIComponent(options.sessionId)}`;
+  const url = `${baseUrl}${pathAndQuery}`;
 
   const connectTimeout = options.connectTimeoutSec ?? 5;
   const maxTime = options.maxTimeSec ?? 15;
@@ -47,6 +44,22 @@ export function buildOutboundSyncCurlArgs(options: OutboundSyncCurlOptions): str
   }
   args.push('-d', options.body, url);
   return args;
+}
+
+/** Build curl argv for a synchronous outbound POST (no trailing slash on baseUrl required). */
+export function buildOutboundSyncCurlArgs(options: OutboundSyncCurlOptions): string[] {
+  const q =
+    `?agentGroupId=${encodeURIComponent(options.agentGroupId)}` +
+    `&sessionId=${encodeURIComponent(options.sessionId)}`;
+  return baseCurlArgs(options, `/outbound${q}`);
+}
+
+/** Stage outbox attachments BEFORE posting outbound so the host never races an empty mailbox. */
+export function buildOutboxSyncCurlArgs(options: OutboundSyncCurlOptions): string[] {
+  const q =
+    `?agentGroupId=${encodeURIComponent(options.agentGroupId)}` +
+    `&sessionId=${encodeURIComponent(options.sessionId)}`;
+  return baseCurlArgs(options, `/outbox${q}`);
 }
 
 /** Clear proxy vars so OneCLI/HTTP_PROXY cannot swallow mailbox traffic. */

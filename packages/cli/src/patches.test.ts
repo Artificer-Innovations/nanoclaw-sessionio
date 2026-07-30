@@ -250,6 +250,8 @@ function sessionioPeer() {
     const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
     expect(patched).toContain('postOutboundSync');
     expect(patched).toContain('buildOutboundSyncCurlArgs');
+    expect(patched).toContain('buildOutboxSyncCurlArgs');
+    expect(patched).toContain('isRemotePeerMode()');
     expect(patched).toContain('clearedProxyEnv');
     expect(patched).toContain('return postOutboundSync(msg)');
     expect(patchMessagesOut(patched)).toBe(patched);
@@ -296,12 +298,24 @@ export async function wakeContainer(agentGroup: { id: string; name: string }, se
 
   it('upgrades marked messages-out that posts without stageOutbox', () => {
     const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
-    expect(patched).toContain('stageOutbox');
-    const stale = patched.replaceAll('stageOutbox', 'legacyStage');
+    expect(patched).toContain('buildOutboxSyncCurlArgs');
+    const stale = patched.replaceAll('buildOutboxSyncCurlArgs', 'legacyStageCurl');
     expect(stale).toContain('buildOutboundSyncCurlArgs');
-    expect(stale).not.toContain('stageOutbox');
+    expect(stale).not.toContain('buildOutboxSyncCurlArgs');
     const upgraded = patchMessagesOut(stale);
-    expect(upgraded).toContain('stageOutbox');
+    expect(upgraded).toContain('buildOutboxSyncCurlArgs');
+  });
+
+  it('upgrades marked messages-out that still gates on getSessionioPeer', () => {
+    const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
+    const stale = patched
+      .replaceAll('isRemotePeerMode', 'getSessionioPeer')
+      .replaceAll('buildOutboxSyncCurlArgs', 'legacyStageCurl');
+    // Force upgrade: missing buildOutboxSyncCurlArgs + peer gate
+    expect(stale).not.toContain('isRemotePeerMode');
+    const upgraded = patchMessagesOut(stale);
+    expect(upgraded).toContain('isRemotePeerMode()');
+    expect(upgraded).toContain('buildOutboxSyncCurlArgs');
   });
 
   it('leaves unmarked sandbox peer bridge alone when already using outbound-sync', () => {
@@ -309,7 +323,8 @@ export async function wakeContainer(agentGroup: { id: string; name: string }, se
 
 function postOutboundSync(msg: { id: string }): number {
   void buildOutboundSyncCurlArgs;
-  void getSessionioPeer();
+  void buildOutboxSyncCurlArgs;
+  void isRemotePeerMode();
   return 0;
 }
 

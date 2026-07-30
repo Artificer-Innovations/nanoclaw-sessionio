@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildOutboundSyncCurlArgs, clearedProxyEnv } from './outbound-sync.js';
+import { buildOutboundSyncCurlArgs, buildOutboxSyncCurlArgs, clearedProxyEnv } from './outbound-sync.js';
 import { inboundWireToRow, sessionRefFromEnv, writeToOutboundWire } from './mailbox.js';
 
 describe('outbound-sync (MCP writeMessageOut → HTTP)', () => {
@@ -33,6 +33,17 @@ describe('outbound-sync (MCP writeMessageOut → HTTP)', () => {
         body: '{}',
       }),
     ).toThrow(/SESSIONIO_BASE_URL/);
+  });
+
+  it('builds curl argv for /outbox staging before outbound', () => {
+    const args = buildOutboxSyncCurlArgs({
+      baseUrl: 'http://host:18765',
+      agentGroupId: 'ag',
+      sessionId: 's1',
+      body: '{"messageId":"m1","files":[]}',
+    });
+    expect(args.at(-1)).toContain('/outbox?agentGroupId=ag');
+    expect(args.at(-1)).toContain('sessionId=s1');
   });
 
   it('clears proxy env so OneCLI cannot swallow mailbox POSTs', () => {

@@ -1013,9 +1013,10 @@ export function uninstallPollLoop(source: string): string {
 }
 
 const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut): number {
-  const peer = getSessionioPeer();
-  if (!peer) {
-    throw new Error('postOutboundSync called without sessionio peer');
+  // Gate on transport env — MCP tools run in a child process that never
+  // calls registerSessionioRunner(), so getSessionioPeer() is always null there.
+  if (!isRemotePeerMode()) {
+    throw new Error('postOutboundSync called without SESSIONIO_TRANSPORT=http|loopback');
   }
   let agentGroupId = '';
   try {
@@ -1025,26 +1026,10 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
   }
   const session = sessionRefFromEnv(process.env, agentGroupId);
   const baseUrl = process.env.SESSIONIO_BASE_URL ?? '';
-  const body = JSON.stringify(writeToOutboundWire(msg));
-  const args = buildOutboundSyncCurlArgs({
-    baseUrl,
-    agentGroupId: session.agentGroupId,
-    sessionId: session.sessionId,
-    token: process.env.SESSIONIO_HTTP_TOKEN,
-    body,
-  });
   const env = clearedProxyEnv(process.env);
-  const proc = Bun.spawnSync(args, {
-    env,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const code = Number(proc.stdout.toString().trim());
-  if (proc.exitCode !== 0 || (code !== 200 && code !== 204)) {
-    const err = proc.stderr.toString().trim();
-    throw new Error(\`sessionio postOutbound failed: http=\${code} exit=\${proc.exitCode} \${err}\`);
-  }
-  // Stage outbox attachments onto the HTTP mailbox (no shared mount required).
+
+  // Stage attachments FIRST. If we POST /outbound before /outbox, the host
+  // delivery poll can consume the message with an empty mailbox and drop files.
   try {
     const parsed = JSON.parse(msg.content) as { files?: unknown };
     const filenames = Array.isArray(parsed.files)
@@ -1064,11 +1049,49 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
         }
       }
       if (files.length > 0) {
-        void peer.stageOutbox(session, msg.id, files);
+        const outboxArgs = buildOutboxSyncCurlArgs({
+          baseUrl,
+          agentGroupId: session.agentGroupId,
+          sessionId: session.sessionId,
+          token: process.env.SESSIONIO_HTTP_TOKEN,
+          body: JSON.stringify({ messageId: msg.id, files }),
+        });
+        const outboxProc = Bun.spawnSync(outboxArgs, {
+          env,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        const outboxCode = Number(outboxProc.stdout.toString().trim());
+        if (outboxProc.exitCode !== 0 || (outboxCode !== 200 && outboxCode !== 204)) {
+          const err = outboxProc.stderr.toString().trim();
+          throw new Error(
+            \`sessionio stageOutbox failed: http=\${outboxCode} exit=\${outboxProc.exitCode} \${err}\`,
+          );
+        }
       }
     }
-  } catch {
-    // Attachment staging is best-effort on the sync curl bridge.
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('sessionio stageOutbox failed')) throw err;
+    // JSON parse / missing files — still allow text-only outbound.
+  }
+
+  const body = JSON.stringify(writeToOutboundWire(msg));
+  const args = buildOutboundSyncCurlArgs({
+    baseUrl,
+    agentGroupId: session.agentGroupId,
+    sessionId: session.sessionId,
+    token: process.env.SESSIONIO_HTTP_TOKEN,
+    body,
+  });
+  const proc = Bun.spawnSync(args, {
+    env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const code = Number(proc.stdout.toString().trim());
+  if (proc.exitCode !== 0 || (code !== 200 && code !== 204)) {
+    const err = proc.stderr.toString().trim();
+    throw new Error(\`sessionio postOutbound failed: http=\${code} exit=\${proc.exitCode} \${err}\`);
   }
   return 0;
 }
@@ -1080,17 +1103,20 @@ export function patchMessagesOut(source: string): string {
   if (
     isFullyPatched(source, names) &&
     source.includes('buildOutboundSyncCurlArgs') &&
-    source.includes('stageOutbox')
+    source.includes('buildOutboxSyncCurlArgs') &&
+    source.includes('isRemotePeerMode()')
   ) {
     return source;
   }
 
-  // Upgrade marked helpers that still inline curl argv (pre-outbound-sync helper),
-  // or that post outbound without staging outbox attachments.
+  // Upgrade marked helpers that still gate on getSessionioPeer (MCP child has no peer),
+  // inline curl argv, or post outbound without staging outbox attachments first.
   let content = source;
   if (
     isFullyPatched(content, names) &&
-    (!content.includes('buildOutboundSyncCurlArgs') || !content.includes('stageOutbox'))
+    (!content.includes('buildOutboundSyncCurlArgs') ||
+      !content.includes('buildOutboxSyncCurlArgs') ||
+      !content.includes('isRemotePeerMode()'))
   ) {
     content = uninstallMessagesOut(content);
   }
@@ -1098,9 +1124,10 @@ export function patchMessagesOut(source: string): string {
   // Sandbox may already have an unmarked peer bridge that uses the shared helper.
   if (
     content.includes('function postOutboundSync(') &&
-    content.includes('getSessionioPeer()') &&
+    content.includes('isRemotePeerMode()') &&
     content.includes('return postOutboundSync(msg)') &&
     content.includes('buildOutboundSyncCurlArgs') &&
+    content.includes('buildOutboxSyncCurlArgs') &&
     !content.includes(begin('messages-out-peer'))
   ) {
     return content;
@@ -1110,9 +1137,9 @@ export function patchMessagesOut(source: string): string {
     const firstImport = content.search(/^import /m);
     if (firstImport < 0) throw new Error('Could not find import anchor for messages-out-import');
     const block = `${begin('messages-out-import')}
-import { getSessionioPeer } from '../sessionio/register.js';
+import { isRemotePeerMode } from '../sessionio/register.js';
 import { sessionRefFromEnv, writeToOutboundWire } from '../sessionio/mailbox.js';
-import { buildOutboundSyncCurlArgs, clearedProxyEnv } from '../sessionio/outbound-sync.js';
+import { buildOutboundSyncCurlArgs, buildOutboxSyncCurlArgs, clearedProxyEnv } from '../sessionio/outbound-sync.js';
 import { getConfig } from '../config.js';
 ${end('messages-out-import')}
 `;
@@ -1144,7 +1171,7 @@ ${end('messages-out-import')}
       `export function writeMessageOut(msg: WriteMessageOut): number {
 ${marked(
   'messages-out-peer',
-  `  if (getSessionioPeer()) {
+  `  if (isRemotePeerMode()) {
     return postOutboundSync(msg);
   }`,
 )}
