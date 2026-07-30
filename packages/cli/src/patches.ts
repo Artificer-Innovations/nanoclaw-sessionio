@@ -1063,7 +1063,8 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
       });
       const outboxProc = Bun.spawnSync(outboxArgs, {
         env,
-        stdin: outboxBody,
+        // Bun.spawnSync rejects string stdin ("stdio must be an array…"); bytes work.
+        stdin: new TextEncoder().encode(outboxBody),
         stdout: 'pipe',
         stderr: 'pipe',
       });
@@ -1087,7 +1088,7 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
   });
   const proc = Bun.spawnSync(args, {
     env,
-    stdin: body,
+    stdin: new TextEncoder().encode(body),
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -1108,8 +1109,8 @@ export function patchMessagesOut(source: string): string {
     source.includes('buildOutboundSyncCurlArgs') &&
     source.includes('buildOutboxSyncCurlArgs') &&
     source.includes('isRemotePeerMode()') &&
-    source.includes('stdin: outboxBody') &&
-    source.includes('stdin: body')
+    source.includes('TextEncoder().encode(outboxBody)') &&
+    source.includes('TextEncoder().encode(body)')
   ) {
     return source;
   }
@@ -1122,8 +1123,8 @@ export function patchMessagesOut(source: string): string {
     (!content.includes('buildOutboundSyncCurlArgs') ||
       !content.includes('buildOutboxSyncCurlArgs') ||
       !content.includes('isRemotePeerMode()') ||
-      !content.includes('stdin: outboxBody') ||
-      !content.includes('stdin: body'))
+      !content.includes('TextEncoder().encode(outboxBody)') ||
+      !content.includes('TextEncoder().encode(body)'))
   ) {
     content = uninstallMessagesOut(content);
   }
@@ -1135,7 +1136,7 @@ export function patchMessagesOut(source: string): string {
     content.includes('return postOutboundSync(msg)') &&
     content.includes('buildOutboundSyncCurlArgs') &&
     content.includes('buildOutboxSyncCurlArgs') &&
-    content.includes('stdin: body') &&
+    content.includes('TextEncoder().encode(body)') &&
     !content.includes(begin('messages-out-peer'))
   ) {
     return content;
