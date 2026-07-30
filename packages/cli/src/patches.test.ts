@@ -318,6 +318,17 @@ export async function wakeContainer(agentGroup: { id: string; name: string }, se
     expect(upgraded).toContain('buildOutboxSyncCurlArgs');
   });
 
+  it('upgrades marked messages-out that only lacks isRemotePeerMode gate', () => {
+    const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
+    const stale = patched.replaceAll('isRemotePeerMode()', 'getSessionioPeer()');
+    expect(stale).toContain('buildOutboundSyncCurlArgs');
+    expect(stale).toContain('buildOutboxSyncCurlArgs');
+    expect(stale).not.toContain('isRemotePeerMode()');
+    const upgraded = patchMessagesOut(stale);
+    expect(upgraded).toContain('isRemotePeerMode()');
+    expect(upgraded).toContain('buildOutboxSyncCurlArgs');
+  });
+
   it('leaves unmarked sandbox peer bridge alone when already using outbound-sync', () => {
     const unmarked = `import { getConfig } from '../config.js';
 
