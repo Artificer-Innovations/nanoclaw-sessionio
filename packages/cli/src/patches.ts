@@ -931,7 +931,8 @@ export function patchPollLoop(source: string): string {
   // or that lacked stageOutbox/getMeta wiring,
   // or that applied /meta via the read-only inbound singleton (Fly volumes),
   // or that used better-sqlite3-style @named binds (bun:sqlite needs $keys),
-  // or that only reset the RO cache on the full-success path (partial writes).
+  // or that only reset the RO cache on the full-success path (partial writes),
+  // or that ran getMeta/import outside the logged try (errors swallowed by caller).
   if (
     content.includes(begin('poll-loop-peer')) &&
     (!content.includes('sessionioGetPendingMessages') ||
@@ -942,7 +943,8 @@ export function patchPollLoop(source: string): string {
       !content.includes('resetInboundDbCache') ||
       !content.includes('$name') ||
       content.includes('VALUES (@name,') ||
-      !/finally \{[\s\S]*?resetInboundDbCache/.test(content))
+      !/finally \{[\s\S]*?resetInboundDbCache/.test(content) ||
+      !/try \{\n    const meta = await peer\.getMeta\(session\);/.test(content))
   ) {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
@@ -973,7 +975,8 @@ export function patchPollLoop(source: string): string {
     content.includes('resetInboundDbCache') &&
     content.includes('$name') &&
     !content.includes('VALUES (@name,') &&
-    /finally \{[\s\S]*?resetInboundDbCache/.test(content)
+    /finally \{[\s\S]*?resetInboundDbCache/.test(content) &&
+    /try \{\n    const meta = await peer\.getMeta\(session\);/.test(content)
   ) {
     return content;
   }
@@ -1009,15 +1012,20 @@ async function sessionioApplyHostMeta(
   peer: NonNullable<ReturnType<typeof getSessionioPeer>>,
   session: ReturnType<typeof sessionRefFromEnv>,
 ) {
-  const meta = await peer.getMeta(session);
-  // Fly/HTTP guests own inbound.db on the volume — host cannot write it.
-  // The read-only inbound singleton cannot project meta; open a writable
-  // handle then reset the RO cache so findByRouting / destination prompts
-  // see the projected rows.
-  const { openInboundDbWritable, resetInboundDbCache } = await import('./db/connection.js');
-  let db: ReturnType<typeof openInboundDbWritable> | undefined;
+  // getMeta + dynamic import must live inside this try: the caller
+  // (sessionioGetPendingMessages) swallows errors with a blank catch, so
+  // transport/module failures would otherwise produce no diagnostics.
+  let db: ReturnType<typeof import('./db/connection.js').openInboundDbWritable> | undefined;
+  let resetInboundDbCache: (() => void) | undefined;
   try {
-    db = openInboundDbWritable();
+    const meta = await peer.getMeta(session);
+    // Fly/HTTP guests own inbound.db on the volume — host cannot write it.
+    // The read-only inbound singleton cannot project meta; open a writable
+    // handle then reset the RO cache so findByRouting / destination prompts
+    // see the projected rows.
+    const conn = await import('./db/connection.js');
+    resetInboundDbCache = conn.resetInboundDbCache;
+    db = conn.openInboundDbWritable();
     if (meta.routing) {
       // bun:sqlite requires the $ prefix on object keys (unlike better-sqlite3).
       db.prepare(
@@ -1064,7 +1072,7 @@ async function sessionioApplyHostMeta(
     // (e.g. routing committed, destinations tx threw) are visible to readers.
     if (db) {
       try {
-        resetInboundDbCache();
+        resetInboundDbCache?.();
       } catch {
         // ignore cache-reset errors
       }
