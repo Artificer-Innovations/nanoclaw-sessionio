@@ -930,7 +930,8 @@ export function patchPollLoop(source: string): string {
   // or that eagerly captured the peer before registerSessionioRunner(),
   // or that lacked stageOutbox/getMeta wiring,
   // or that applied /meta via the read-only inbound singleton (Fly volumes),
-  // or that used better-sqlite3-style @named binds (bun:sqlite needs $keys).
+  // or that used better-sqlite3-style @named binds (bun:sqlite needs $keys),
+  // or that only reset the RO cache on the full-success path (partial writes).
   if (
     content.includes(begin('poll-loop-peer')) &&
     (!content.includes('sessionioGetPendingMessages') ||
@@ -940,7 +941,8 @@ export function patchPollLoop(source: string): string {
       !content.includes('openInboundDbWritable') ||
       !content.includes('resetInboundDbCache') ||
       !content.includes('$name') ||
-      content.includes('VALUES (@name,'))
+      content.includes('VALUES (@name,') ||
+      !/finally \{[\s\S]*?resetInboundDbCache/.test(content))
   ) {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
@@ -970,7 +972,8 @@ export function patchPollLoop(source: string): string {
     content.includes('openInboundDbWritable') &&
     content.includes('resetInboundDbCache') &&
     content.includes('$name') &&
-    !content.includes('VALUES (@name,')
+    !content.includes('VALUES (@name,') &&
+    /finally \{[\s\S]*?resetInboundDbCache/.test(content)
   ) {
     return content;
   }
@@ -1050,7 +1053,6 @@ async function sessionioApplyHostMeta(
       });
       tx(meta.destinations);
     }
-    resetInboundDbCache();
   } catch (err) {
     console.error(
       \`[agent-runner] sessionioApplyHostMeta failed: \${
@@ -1058,10 +1060,19 @@ async function sessionioApplyHostMeta(
       }\`,
     );
   } finally {
-    try {
-      db?.close();
-    } catch {
-      // ignore close errors
+    // Always drop the RO singleton after any write attempt so partial applies
+    // (e.g. routing committed, destinations tx threw) are visible to readers.
+    if (db) {
+      try {
+        resetInboundDbCache();
+      } catch {
+        // ignore cache-reset errors
+      }
+      try {
+        db.close();
+      } catch {
+        // ignore close errors
+      }
     }
   }
 }

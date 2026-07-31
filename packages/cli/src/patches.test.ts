@@ -227,6 +227,9 @@ ${end('container-runner-meta')}`,
     expect(poll).toContain('$name');
     expect(poll).toContain('$channel_type');
     expect(poll).not.toContain('VALUES (@name,');
+    // Cache reset must run in finally so partial writes still invalidate RO reads.
+    expect(poll).toMatch(/finally \{[\s\S]*?resetInboundDbCache/);
+    expect(poll).not.toMatch(/resetInboundDbCache\(\);\n  \} catch/);
   });
 
   it('upgrades stale poll-loop that applied /meta via read-only getInboundDb', () => {
@@ -271,6 +274,37 @@ ${end('container-runner-meta')}`,
     const upgraded = patchPollLoop(stale);
     expect(upgraded).toContain('$name');
     expect(upgraded).not.toContain('VALUES (@name,');
+  });
+
+  it('upgrades stale poll-loop that only reset RO cache on full success', () => {
+    const good = patchPollLoop(STOCK_POLL_LOOP);
+    // Simulate prior patch: reset only after both writes, not in finally.
+    const finallyStart = good.indexOf('  } finally {\n    // Always drop the RO singleton');
+    expect(finallyStart).toBeGreaterThan(0);
+    const catchStart = good.lastIndexOf('  } catch (err) {', finallyStart);
+    expect(catchStart).toBeGreaterThan(0);
+    const stale =
+      `${good.slice(0, catchStart)}resetInboundDbCache();\n` +
+      `  } catch (err) {
+    console.error(
+      \`[agent-runner] sessionioApplyHostMeta failed: \${
+        err instanceof Error ? err.message : String(err)
+      }\`,
+    );
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore close errors
+    }
+  }
+}` +
+      good.slice(good.indexOf('\n\nasync function sessionioStageOutboxFiles', finallyStart));
+    expect(stale).toMatch(/resetInboundDbCache\(\);\n  \} catch/);
+    expect(stale).not.toMatch(/finally \{[\s\S]*?resetInboundDbCache/);
+    const upgraded = patchPollLoop(stale);
+    expect(upgraded).toMatch(/finally \{[\s\S]*?resetInboundDbCache/);
+    expect(upgraded).not.toMatch(/resetInboundDbCache\(\);\n  \} catch/);
   });
 
   it('upgrades stale poll-loop that eagerly captured the peer (ESM hoist bug)', () => {
