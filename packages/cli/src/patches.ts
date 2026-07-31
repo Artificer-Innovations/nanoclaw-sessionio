@@ -997,9 +997,14 @@ async function sessionioApplyHostMeta(
   session: ReturnType<typeof sessionRefFromEnv>,
 ) {
   const meta = await peer.getMeta(session);
+  // Fly/HTTP guests own inbound.db on the volume — host cannot write it.
+  // The read-only inbound singleton cannot project meta; open a writable
+  // handle then reset the RO cache so findByRouting / destination prompts
+  // see the projected rows.
+  const { openInboundDbWritable, resetInboundDbCache } = await import('./db/connection.js');
+  let db: ReturnType<typeof openInboundDbWritable> | undefined;
   try {
-    const { getInboundDb } = await import('./db/connection.js');
-    const db = getInboundDb();
+    db = openInboundDbWritable();
     if (meta.routing) {
       db.prepare(
         \`INSERT INTO session_routing (id, channel_type, platform_id, thread_id)
@@ -1012,8 +1017,8 @@ async function sessionioApplyHostMeta(
     }
     if (meta.destinations) {
       const tx = db.transaction((rows: NonNullable<typeof meta.destinations>) => {
-        db.prepare('DELETE FROM destinations').run();
-        const stmt = db.prepare(
+        db!.prepare('DELETE FROM destinations').run();
+        const stmt = db!.prepare(
           \`INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
            VALUES (@name, @display_name, @type, @channel_type, @platform_id, @agent_group_id)\`,
         );
@@ -1021,8 +1026,19 @@ async function sessionioApplyHostMeta(
       });
       tx(meta.destinations);
     }
-  } catch {
-    // Local SQLite projection is best-effort (shared mount may already have routing).
+    resetInboundDbCache();
+  } catch (err) {
+    console.error(
+      \`[agent-runner] sessionioApplyHostMeta failed: \${
+        err instanceof Error ? err.message : String(err)
+      }\`,
+    );
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore close errors
+    }
   }
 }
 

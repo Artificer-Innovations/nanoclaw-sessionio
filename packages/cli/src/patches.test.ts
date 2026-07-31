@@ -214,6 +214,17 @@ ${end('container-runner-meta')}`,
     expect(uninstallPollLoop(poll)).not.toContain('@nanoclaw-sessionio:poll-loop-peer:begin');
   });
 
+  it('applies host /meta destinations via writable inbound DB (Fly volume)', () => {
+    const poll = patchPollLoop(STOCK_POLL_LOOP);
+    // Must not use the read-only singleton — RO writes fail silently on Fly
+    // and leave destinations empty → from="unknown:…" → dropped replies.
+    expect(poll).toContain('openInboundDbWritable');
+    expect(poll).toContain('resetInboundDbCache');
+    expect(poll).not.toContain('{ getInboundDb }');
+    expect(poll).not.toContain('getInboundDb()');
+    expect(poll).toContain('sessionioApplyHostMeta failed');
+  });
+
   it('upgrades stale poll-loop that eagerly captured the peer (ESM hoist bug)', () => {
     const good = patchPollLoop(STOCK_POLL_LOOP);
     const stale = good.replace(
