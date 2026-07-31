@@ -214,6 +214,99 @@ ${end('container-runner-meta')}`,
     expect(uninstallPollLoop(poll)).not.toContain('@nanoclaw-sessionio:poll-loop-peer:begin');
   });
 
+  it('applies host /meta destinations via writable inbound DB (Fly volume)', () => {
+    const poll = patchPollLoop(STOCK_POLL_LOOP);
+    // Must not use the read-only singleton — RO writes fail silently on Fly
+    // and leave destinations empty → from="unknown:…" → dropped replies.
+    expect(poll).toContain('openInboundDbWritable');
+    expect(poll).toContain('resetInboundDbCache');
+    expect(poll).not.toContain('{ getInboundDb }');
+    expect(poll).not.toContain('getInboundDb()');
+    expect(poll).toContain('sessionioApplyHostMeta failed');
+    // bun:sqlite needs $prefixed keys; @name binds as NULL and breaks allowlists.
+    expect(poll).toContain('$name');
+    expect(poll).toContain('$channel_type');
+    expect(poll).not.toContain('VALUES (@name,');
+    // Cache reset must run in finally so partial writes still invalidate RO reads.
+    expect(poll).toMatch(/finally \{[\s\S]*?resetInboundDbCache/);
+    expect(poll).not.toMatch(/resetInboundDbCache\(\);\n  \} catch/);
+  });
+
+  it('upgrades stale poll-loop that applied /meta via read-only getInboundDb', () => {
+    const good = patchPollLoop(STOCK_POLL_LOOP);
+    const roApply = `async function sessionioApplyHostMeta(
+  peer: NonNullable<ReturnType<typeof getSessionioPeer>>,
+  session: ReturnType<typeof sessionRefFromEnv>,
+) {
+  const meta = await peer.getMeta(session);
+  try {
+    const { getInboundDb } = await import('./db/connection.js');
+    const db = getInboundDb();
+    if (meta.routing) {
+      db.prepare('SELECT 1').run();
+    }
+    if (meta.destinations) {
+      db.prepare('DELETE FROM destinations').run();
+    }
+  } catch {
+    // Local SQLite projection is best-effort.
+  }
+}`;
+    const stale = good.replace(
+      /async function sessionioApplyHostMeta\([\s\S]*?\n\}\n\nasync function sessionioStageOutboxFiles/,
+      `${roApply}\n\nasync function sessionioStageOutboxFiles`,
+    );
+    expect(stale).toContain('{ getInboundDb }');
+    expect(stale).not.toContain('openInboundDbWritable');
+    const upgraded = patchPollLoop(stale);
+    expect(upgraded).toContain('openInboundDbWritable');
+    expect(upgraded).toContain('resetInboundDbCache');
+    expect(upgraded).not.toContain('{ getInboundDb }');
+    expect(upgraded).toContain('sessionioApplyHostMeta failed');
+    expect(upgraded).toContain('$name');
+  });
+
+  it('upgrades stale poll-loop that used @named binds (bun NULL inserts)', () => {
+    const good = patchPollLoop(STOCK_POLL_LOOP);
+    const stale = good.replaceAll('$name', '@name').replaceAll('$display_name', '@display_name');
+    // Enough to trip the VALUES (@name, upgrade guard even if other $keys remain.
+    expect(stale).toContain('VALUES (@name,');
+    const upgraded = patchPollLoop(stale);
+    expect(upgraded).toContain('$name');
+    expect(upgraded).not.toContain('VALUES (@name,');
+  });
+
+  it('upgrades stale poll-loop that only reset RO cache on full success', () => {
+    const good = patchPollLoop(STOCK_POLL_LOOP);
+    // Simulate prior patch: reset only after both writes, not in finally.
+    const finallyStart = good.indexOf('  } finally {\n    // Always drop the RO singleton');
+    expect(finallyStart).toBeGreaterThan(0);
+    const catchStart = good.lastIndexOf('  } catch (err) {', finallyStart);
+    expect(catchStart).toBeGreaterThan(0);
+    const stale =
+      `${good.slice(0, catchStart)}resetInboundDbCache();\n` +
+      `  } catch (err) {
+    console.error(
+      \`[agent-runner] sessionioApplyHostMeta failed: \${
+        err instanceof Error ? err.message : String(err)
+      }\`,
+    );
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore close errors
+    }
+  }
+}` +
+      good.slice(good.indexOf('\n\nasync function sessionioStageOutboxFiles', finallyStart));
+    expect(stale).toMatch(/resetInboundDbCache\(\);\n  \} catch/);
+    expect(stale).not.toMatch(/finally \{[\s\S]*?resetInboundDbCache/);
+    const upgraded = patchPollLoop(stale);
+    expect(upgraded).toMatch(/finally \{[\s\S]*?resetInboundDbCache/);
+    expect(upgraded).not.toMatch(/resetInboundDbCache\(\);\n  \} catch/);
+  });
+
   it('upgrades stale poll-loop that eagerly captured the peer (ESM hoist bug)', () => {
     const good = patchPollLoop(STOCK_POLL_LOOP);
     const stale = good.replace(
