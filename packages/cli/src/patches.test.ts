@@ -231,7 +231,7 @@ ${end('container-runner-meta')}`,
     expect(poll).toMatch(/finally \{[\s\S]*?resetInboundDbCache/);
     expect(poll).not.toMatch(/resetInboundDbCache\(\);\n  \} catch/);
     // getMeta + import must be inside the logged try (caller swallows errors).
-    expect(poll).toMatch(/try \{\n    const meta = await peer\.getMeta\(session\);/);
+    expect(poll).toMatch(/try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/);
   });
 
   it('upgrades stale poll-loop that applied /meta via read-only getInboundDb', () => {

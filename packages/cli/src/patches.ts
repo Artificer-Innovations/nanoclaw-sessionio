@@ -944,7 +944,7 @@ export function patchPollLoop(source: string): string {
       !content.includes('$name') ||
       content.includes('VALUES (@name,') ||
       !/finally \{[\s\S]*?resetInboundDbCache/.test(content) ||
-      !/try \{\n    const meta = await peer\.getMeta\(session\);/.test(content))
+      !/try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/.test(content))
   ) {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
@@ -976,7 +976,7 @@ export function patchPollLoop(source: string): string {
     content.includes('$name') &&
     !content.includes('VALUES (@name,') &&
     /finally \{[\s\S]*?resetInboundDbCache/.test(content) &&
-    /try \{\n    const meta = await peer\.getMeta\(session\);/.test(content)
+    /try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/.test(content)
   ) {
     return content;
   }
