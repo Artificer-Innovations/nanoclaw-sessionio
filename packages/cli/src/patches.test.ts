@@ -223,6 +223,10 @@ ${end('container-runner-meta')}`,
     expect(poll).not.toContain('{ getInboundDb }');
     expect(poll).not.toContain('getInboundDb()');
     expect(poll).toContain('sessionioApplyHostMeta failed');
+    // bun:sqlite needs $prefixed keys; @name binds as NULL and breaks allowlists.
+    expect(poll).toContain('$name');
+    expect(poll).toContain('$channel_type');
+    expect(poll).not.toContain('VALUES (@name,');
   });
 
   it('upgrades stale poll-loop that applied /meta via read-only getInboundDb', () => {
@@ -256,6 +260,17 @@ ${end('container-runner-meta')}`,
     expect(upgraded).toContain('resetInboundDbCache');
     expect(upgraded).not.toContain('{ getInboundDb }');
     expect(upgraded).toContain('sessionioApplyHostMeta failed');
+    expect(upgraded).toContain('$name');
+  });
+
+  it('upgrades stale poll-loop that used @named binds (bun NULL inserts)', () => {
+    const good = patchPollLoop(STOCK_POLL_LOOP);
+    const stale = good.replaceAll('$name', '@name').replaceAll('$display_name', '@display_name');
+    // Enough to trip the VALUES (@name, upgrade guard even if other $keys remain.
+    expect(stale).toContain('VALUES (@name,');
+    const upgraded = patchPollLoop(stale);
+    expect(upgraded).toContain('$name');
+    expect(upgraded).not.toContain('VALUES (@name,');
   });
 
   it('upgrades stale poll-loop that eagerly captured the peer (ESM hoist bug)', () => {

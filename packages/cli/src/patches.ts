@@ -929,7 +929,8 @@ export function patchPollLoop(source: string): string {
   // Upgrade stub that only declared __sessionioPeer without wiring IO,
   // or that eagerly captured the peer before registerSessionioRunner(),
   // or that lacked stageOutbox/getMeta wiring,
-  // or that applied /meta via the read-only inbound singleton (Fly volumes).
+  // or that applied /meta via the read-only inbound singleton (Fly volumes),
+  // or that used better-sqlite3-style @named binds (bun:sqlite needs $keys).
   if (
     content.includes(begin('poll-loop-peer')) &&
     (!content.includes('sessionioGetPendingMessages') ||
@@ -937,7 +938,9 @@ export function patchPollLoop(source: string): string {
       !content.includes('stageOutbox') ||
       !content.includes('getMeta') ||
       !content.includes('openInboundDbWritable') ||
-      !content.includes('resetInboundDbCache'))
+      !content.includes('resetInboundDbCache') ||
+      !content.includes('$name') ||
+      content.includes('VALUES (@name,'))
   ) {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
@@ -965,7 +968,9 @@ export function patchPollLoop(source: string): string {
     content.includes('sessionioGetPendingMessages') &&
     content.includes('stageOutbox') &&
     content.includes('openInboundDbWritable') &&
-    content.includes('resetInboundDbCache')
+    content.includes('resetInboundDbCache') &&
+    content.includes('$name') &&
+    !content.includes('VALUES (@name,')
   ) {
     return content;
   }
@@ -1011,23 +1016,37 @@ async function sessionioApplyHostMeta(
   try {
     db = openInboundDbWritable();
     if (meta.routing) {
+      // bun:sqlite requires the $ prefix on object keys (unlike better-sqlite3).
       db.prepare(
         \`INSERT INTO session_routing (id, channel_type, platform_id, thread_id)
-         VALUES (1, @channel_type, @platform_id, @thread_id)
+         VALUES (1, \$channel_type, \$platform_id, \$thread_id)
          ON CONFLICT(id) DO UPDATE SET
            channel_type = excluded.channel_type,
            platform_id = excluded.platform_id,
            thread_id = excluded.thread_id\`,
-      ).run(meta.routing);
+      ).run({
+        \$channel_type: meta.routing.channel_type,
+        \$platform_id: meta.routing.platform_id,
+        \$thread_id: meta.routing.thread_id,
+      });
     }
     if (meta.destinations) {
       const tx = db.transaction((rows: NonNullable<typeof meta.destinations>) => {
         db!.prepare('DELETE FROM destinations').run();
         const stmt = db!.prepare(
           \`INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
-           VALUES (@name, @display_name, @type, @channel_type, @platform_id, @agent_group_id)\`,
+           VALUES (\$name, \$display_name, \$type, \$channel_type, \$platform_id, \$agent_group_id)\`,
         );
-        for (const row of rows) stmt.run(row);
+        for (const row of rows) {
+          stmt.run({
+            \$name: row.name,
+            \$display_name: row.display_name,
+            \$type: row.type,
+            \$channel_type: row.channel_type,
+            \$platform_id: row.platform_id,
+            \$agent_group_id: row.agent_group_id,
+          });
+        }
       });
       tx(meta.destinations);
     }
