@@ -413,9 +413,7 @@ export function patchDelivery(source: string): string {
  */
 function findDeliverMessageInsertIndex(content: string): number {
   // Prefer the typed host signature (multi-line params).
-  const typed = content.search(
-    /async function deliverMessage\(\s*\r?\n\s*msg:\s*\{/,
-  );
+  const typed = content.search(/async function deliverMessage\(\s*\r?\n\s*msg:\s*\{/);
   if (typed >= 0) return typed;
   // Fall back to the last declaration when only stubs/variants exist.
   const last = content.lastIndexOf('async function deliverMessage(');
