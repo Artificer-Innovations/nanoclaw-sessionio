@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   patchContainerRunner,
   patchIndex,
+  patchMcpToolsIndex,
   patchMessagesOut,
   patchPollLoop,
   patchRunnerIndex,
@@ -9,9 +10,11 @@ import {
   uninstallContainerRunner,
   uninstallDelivery,
   uninstallIndex,
+  uninstallMcpToolsIndex,
   uninstallMessagesOut,
   uninstallPollLoop,
   uninstallSessionManager,
+  scavengeUnmarkedMcpSessionioRegister,
 } from './patches.js';
 import {
   STOCK_CONTAINER_RUNNER,
@@ -246,10 +249,65 @@ function sessionioPeer() {
     );
   });
 
+  it('uninstall scavenges bare sessionioWriteMessageOut leftovers without await', () => {
+    const leftover = `async function deliverErrorResult(text: string): Promise<void> {
+  return sessionioWriteMessageOut({
+    id: 'x',
+    content: JSON.stringify({ text }),
+  }).then(() => undefined);
+}
+`;
+    const cleaned = uninstallPollLoop(leftover);
+    expect(cleaned).not.toContain('sessionioWriteMessageOut');
+    expect(cleaned).toContain('writeMessageOut({');
+    expect(cleaned).not.toContain('.then(() => undefined)');
+  });
+
+  it('patches mcp-tools register and scavenges unmarked boots', () => {
+    const stock = `import './core.js';
+import { startMcpServer } from './server.js';
+`;
+    const patched = patchMcpToolsIndex(stock);
+    expect(patched).toContain('@nanoclaw-sessionio:mcp-register:begin');
+    expect(patched).toContain('registerSessionioRunner');
+    expect(patchMcpToolsIndex(patched)).toBe(patched);
+    expect(uninstallMcpToolsIndex(patched)).not.toContain('registerSessionioRunner');
+
+    const unmarked = `// Sessionio peer registration is optional here: writeMessageOut gates on
+// SESSIONIO_TRANSPORT via isRemotePeerMode(). Still register so peer-aware
+// call sites (if any) work inside the MCP child process.
+import { registerSessionioRunner } from '../sessionio/register.js';
+registerSessionioRunner();
+
+import './core.js';
+`;
+    expect(scavengeUnmarkedMcpSessionioRegister(unmarked)).not.toContain('registerSessionioRunner');
+    expect(uninstallMcpToolsIndex(unmarked)).not.toContain('registerSessionioRunner');
+  });
+
+  it('patchMcpToolsIndex throws without an import anchor', () => {
+    expect(() => patchMcpToolsIndex('export {};\n')).toThrow(/mcp-tools import anchor/);
+  });
+
+  it('scavengeUnmarkedMcpSessionioRegister throws on pattern mismatch', () => {
+    expect(() =>
+      scavengeUnmarkedMcpSessionioRegister(
+        "import { registerSessionioRunner } from '../sessionio/register.js';\n",
+      ),
+    ).toThrow(/Could not scavenge unmarked mcp-tools/);
+  });
+
+  it('scavengeUnmarkedMcpSessionioRegister is a no-op when mcp-register is marked', () => {
+    const marked = patchMcpToolsIndex(`import './core.js';\n`);
+    expect(scavengeUnmarkedMcpSessionioRegister(marked)).toBe(marked);
+  });
+
   it('patches messages-out peer bridge through outbound-sync helpers', () => {
     const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
     expect(patched).toContain('postOutboundSync');
     expect(patched).toContain('buildOutboundSyncCurlArgs');
+    expect(patched).toContain('buildOutboxSyncCurlArgs');
+    expect(patched).toContain('isRemotePeerMode()');
     expect(patched).toContain('clearedProxyEnv');
     expect(patched).toContain('return postOutboundSync(msg)');
     expect(patchMessagesOut(patched)).toBe(patched);
@@ -296,12 +354,49 @@ export async function wakeContainer(agentGroup: { id: string; name: string }, se
 
   it('upgrades marked messages-out that posts without stageOutbox', () => {
     const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
-    expect(patched).toContain('stageOutbox');
-    const stale = patched.replaceAll('stageOutbox', 'legacyStage');
+    expect(patched).toContain('buildOutboxSyncCurlArgs');
+    const stale = patched.replaceAll('buildOutboxSyncCurlArgs', 'legacyStageCurl');
     expect(stale).toContain('buildOutboundSyncCurlArgs');
-    expect(stale).not.toContain('stageOutbox');
+    expect(stale).not.toContain('buildOutboxSyncCurlArgs');
     const upgraded = patchMessagesOut(stale);
-    expect(upgraded).toContain('stageOutbox');
+    expect(upgraded).toContain('buildOutboxSyncCurlArgs');
+  });
+
+  it('upgrades marked messages-out that still gates on getSessionioPeer', () => {
+    const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
+    const stale = patched
+      .replaceAll('isRemotePeerMode', 'getSessionioPeer')
+      .replaceAll('buildOutboxSyncCurlArgs', 'legacyStageCurl');
+    // Force upgrade: missing buildOutboxSyncCurlArgs + peer gate
+    expect(stale).not.toContain('isRemotePeerMode');
+    const upgraded = patchMessagesOut(stale);
+    expect(upgraded).toContain('isRemotePeerMode()');
+    expect(upgraded).toContain('buildOutboxSyncCurlArgs');
+  });
+
+  it('upgrades marked messages-out that still put JSON body in curl argv', () => {
+    const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
+    expect(patched).toContain('TextEncoder().encode(body)');
+    const staleOutbox = patched.replaceAll(
+      'TextEncoder().encode(outboxBody)',
+      '/* no stdin outbox */',
+    );
+    expect(patchMessagesOut(staleOutbox)).toContain('TextEncoder().encode(outboxBody)');
+    const staleBody = patched.replaceAll('TextEncoder().encode(body)', '/* no stdin body */');
+    expect(staleBody).toContain('TextEncoder().encode(outboxBody)');
+    expect(staleBody).not.toContain('TextEncoder().encode(body)');
+    expect(patchMessagesOut(staleBody)).toContain('TextEncoder().encode(body)');
+  });
+
+  it('upgrades marked messages-out that only lacks isRemotePeerMode gate', () => {
+    const patched = patchMessagesOut(STOCK_MESSAGES_OUT);
+    const stale = patched.replaceAll('isRemotePeerMode()', 'getSessionioPeer()');
+    expect(stale).toContain('buildOutboundSyncCurlArgs');
+    expect(stale).toContain('buildOutboxSyncCurlArgs');
+    expect(stale).not.toContain('isRemotePeerMode()');
+    const upgraded = patchMessagesOut(stale);
+    expect(upgraded).toContain('isRemotePeerMode()');
+    expect(upgraded).toContain('buildOutboxSyncCurlArgs');
   });
 
   it('leaves unmarked sandbox peer bridge alone when already using outbound-sync', () => {
@@ -309,7 +404,10 @@ export async function wakeContainer(agentGroup: { id: string; name: string }, se
 
 function postOutboundSync(msg: { id: string }): number {
   void buildOutboundSyncCurlArgs;
-  void getSessionioPeer();
+  void buildOutboxSyncCurlArgs;
+  void isRemotePeerMode();
+  const body = '{}';
+  void Bun.spawnSync([], { stdin: new TextEncoder().encode(body) });
   return 0;
 }
 
@@ -318,6 +416,35 @@ export function writeMessageOut(msg: { id: string }): number {
 }
 `;
     expect(patchMessagesOut(unmarked)).toBe(unmarked);
+  });
+
+  it('upgrades legacy unmarked peer bridge without duplicating postOutboundSync', () => {
+    const legacy = `import { getConfig } from '../config.js';
+import { getSessionioPeer } from '../sessionio/register.js';
+
+function postOutboundSync(msg: WriteMessageOut): number {
+  const peer = getSessionioPeer();
+  if (!peer) throw new Error('no peer');
+  void peer.stageOutbox;
+  return 0;
+}
+
+export function writeMessageOut(msg: WriteMessageOut): number {
+  if (getSessionioPeer()) {
+    return postOutboundSync(msg);
+  }
+  const outbound = getOutboundDb();
+  return 1;
+}
+`;
+    const upgraded = patchMessagesOut(legacy);
+    expect(upgraded.match(/function postOutboundSync\(/g)).toHaveLength(1);
+    expect(upgraded).toContain('@nanoclaw-sessionio:messages-out-helper:begin');
+    expect(upgraded).toContain('isRemotePeerMode()');
+    expect(upgraded).toContain('buildOutboxSyncCurlArgs');
+    expect(upgraded).not.toContain('peer.stageOutbox');
+    // Legacy unmarked gate removed; marked gate is the only remaining call site.
+    expect(upgraded.match(/return postOutboundSync\(msg\);/g)).toHaveLength(1);
   });
 
   it('throws when messages-out / index anchors are missing', () => {

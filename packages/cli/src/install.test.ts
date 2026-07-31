@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseArgs, runCommand, isCliEntry } from './bin.js';
 import {
   patchDelivery,
@@ -9,6 +9,8 @@ import {
   patchIndex,
   patchRunnerIndex,
   patchSessionManager,
+  scavengeUnmarkedDeliveryOutbox,
+  STOCK_DELIVERY_OUTBOX,
   uninstallDelivery,
   uninstallHostSweep,
   uninstallIndex,
@@ -24,6 +26,7 @@ import {
   STOCK_RUNNER_INDEX,
   STOCK_SESSION_MANAGER,
   STOCK_MESSAGES_OUT,
+  STOCK_MCP_TOOLS_INDEX,
 } from './test-fixtures.js';
 import { findNanoclawRoot, packageRoot, rewriteHostResource } from './paths.js';
 import {
@@ -46,6 +49,7 @@ function makeFixtureRoot(): string {
     'src/container-runner.ts': STOCK_CONTAINER_RUNNER,
     'src/index.ts': STOCK_INDEX,
     'container/agent-runner/src/index.ts': STOCK_RUNNER_INDEX,
+    'container/agent-runner/src/mcp-tools/index.ts': STOCK_MCP_TOOLS_INDEX,
     'container/agent-runner/src/poll-loop.ts': STOCK_POLL_LOOP,
     'container/agent-runner/src/db/messages-out.ts': STOCK_MESSAGES_OUT,
     '.env.example': 'FOO=1\n',
@@ -101,12 +105,148 @@ describe('patches', () => {
     const patched = patchDelivery(STOCK_DELIVERY);
     expect(patched).toContain('resolveSessionTransport');
     expect(patched).toContain('@nanoclaw-sessionio:delivery-drain:begin');
+    expect(patched).toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    expect(patched).toContain('consumeOutbox');
     expect(patched).toContain('inbound DB unavailable');
     expect(patched).not.toContain('inDb as Database.Database');
     expect(patchDelivery(patched)).toBe(patched);
     const restored = uninstallDelivery(patched);
     expect(restored).toContain('outDb.close()');
+    expect(restored).toContain('readOutboxFiles(session.agent_group_id, session.id, msg.id');
+    expect(restored).not.toContain('consumeOutbox');
     expect(restored).not.toContain('@nanoclaw-sessionio:delivery-drain:begin');
+    expect(restored).not.toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    expect(restored).not.toContain('resolveSessionTransport');
+    // Byte-identical round-trip — fixture has an early deliverMessage stub; the
+    // restore anchor must target the real typed declaration, not the stub.
+    expect(restored).toBe(STOCK_DELIVERY);
+  });
+
+  it('scavenges unmarked consumeOutbox hotfix on uninstall', () => {
+    const unmarked = STOCK_DELIVERY.replace(
+      `  // Read file attachments from outbox if the content declares files.
+  // File I/O lives in session-manager.ts (symmetric with inbound
+  // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+  const files =
+    Array.isArray(content.files) && content.files.length > 0
+      ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
+      : undefined;`,
+      `  // Read file attachments from outbox if the content declares files.
+  // HTTP/loopback agents stage bytes on the host mailbox (no shared mount);
+  // filesystem agents write under the session outbox dir. Prefer the transport
+  // store, then fall back to disk for stock mounts.
+  let files: OutboundFile[] | undefined;
+  if (Array.isArray(content.files) && content.files.length > 0) {
+    const transport = resolveSessionTransport({
+      agentGroupId: session.agent_group_id,
+      sessionId: session.id,
+    });
+    const sessionRef = {
+      agentGroupId: session.agent_group_id,
+      sessionId: session.id,
+    };
+    let fromMailbox: OutboundFile[] = [];
+    for (let attempt = 0; attempt < 5 && fromMailbox.length === 0; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 150));
+      const staged = await Promise.resolve(transport.consumeOutbox(sessionRef, msg.id));
+      fromMailbox = staged
+        .filter(
+          (f): f is { name: string; data: string } =>
+            typeof f.name === 'string' &&
+            f.name.length > 0 &&
+            typeof f.data === 'string',
+        )
+        .map((f) => ({
+          filename: f.name,
+          data: Buffer.from(f.data, 'base64'),
+        }));
+    }
+    files =
+      fromMailbox.length > 0
+        ? fromMailbox
+        : readOutboxFiles(
+            session.agent_group_id,
+            session.id,
+            msg.id,
+            content.files as string[],
+          );
+    if (!files || files.length === 0) {
+      log.warn('Outbound declared files but none were staged or on disk', {
+        messageId: msg.id,
+        sessionId: session.id,
+        declared: content.files,
+      });
+    }
+  }`,
+    );
+    expect(unmarked).toContain('consumeOutbox');
+    expect(unmarked).not.toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    const restored = uninstallDelivery(unmarked);
+    expect(restored).toContain('readOutboxFiles(session.agent_group_id, session.id, msg.id');
+    expect(restored).not.toContain('consumeOutbox');
+    expect(restored).not.toContain('resolveSessionTransport');
+  });
+
+  it('upgrades installs that have drain/import but lack delivery-outbox', () => {
+    const good = patchDelivery(STOCK_DELIVERY);
+    const withoutOutbox = good.replace(
+      /\/\/ @nanoclaw-sessionio:delivery-outbox:begin[\s\S]*?\/\/ @nanoclaw-sessionio:delivery-outbox:end\r?\n?/,
+      STOCK_DELIVERY_OUTBOX,
+    );
+    expect(withoutOutbox).toContain('@nanoclaw-sessionio:delivery-import:begin');
+    expect(withoutOutbox).toContain('@nanoclaw-sessionio:delivery-drain:begin');
+    expect(withoutOutbox).not.toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    const upgraded = patchDelivery(withoutOutbox);
+    expect(upgraded).toContain('@nanoclaw-sessionio:delivery-outbox:begin');
+    expect(upgraded).toContain('consumeOutbox');
+  });
+
+  it('uninstallDelivery restores drain before stub when typed deliverMessage is absent', () => {
+    // No multi-line `msg: {` signature — exercises lastIndexOf fallback.
+    // Include stock outbox text so uninstall doesn't try to re-insert it.
+    const stubOnly = `async function deliverMessage(_msg: unknown): Promise<null> {
+  return null;
+}
+
+  // Read file attachments from outbox if the content declares files.
+  // File I/O lives in session-manager.ts (symmetric with inbound
+  // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+  const files =
+    Array.isArray(content.files) && content.files.length > 0
+      ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
+      : undefined;
+`;
+    const restored = uninstallDelivery(stubOnly);
+    expect(restored.indexOf('async function drainSession')).toBeLessThan(
+      restored.indexOf('async function deliverMessage'),
+    );
+  });
+
+  it('uninstallDelivery throws when deliverMessage anchor is missing', () => {
+    expect(() => uninstallDelivery('export const empty = 1;\n')).toThrow(
+      /deliverMessage anchor missing/,
+    );
+  });
+
+  it('uninstallDelivery throws when stock outbox cannot be restored', () => {
+    const markedOnly = `// @nanoclaw-sessionio:delivery-outbox:begin
+  let files: OutboundFile[] | undefined;
+// @nanoclaw-sessionio:delivery-outbox:end
+async function deliverMessage(): Promise<void> {}
+async function drainSession(session: Session): Promise<void> { void session; }
+`;
+    expect(() => uninstallDelivery(markedOnly)).toThrow(/Could not restore stock delivery outbox/);
+  });
+
+  it('scavengeUnmarkedDeliveryOutbox throws on pattern mismatch', () => {
+    expect(() => scavengeUnmarkedDeliveryOutbox('const x = consumeOutbox;\n')).toThrow(
+      /Could not scavenge unmarked delivery outbox/,
+    );
+  });
+
+  it('scavengeUnmarkedDeliveryOutbox is a no-op when delivery-outbox is marked', () => {
+    const marked = patchDelivery(STOCK_DELIVERY);
+    expect(scavengeUnmarkedDeliveryOutbox(marked)).toBe(marked);
   });
 
   it('upgrades stale delivery drain that continued with inDb=null', () => {
@@ -128,9 +268,20 @@ describe('patches', () => {
   it('patches host-sweep and index', () => {
     const sweep = patchHostSweep(STOCK_HOST_SWEEP);
     expect(sweep).toContain('resolveSessionTransport');
-    expect(uninstallHostSweep(sweep)).not.toContain(
-      '@nanoclaw-sessionio:host-sweep-liveness:begin',
+    const restoredSweep = uninstallHostSweep(sweep);
+    expect(restoredSweep).not.toContain('@nanoclaw-sessionio:host-sweep-liveness:begin');
+    // Stock heartbeat helper must stay at its original site, not appended at EOF.
+    expect(restoredSweep.indexOf('function heartbeatMtimeMs')).toBe(
+      STOCK_HOST_SWEEP.indexOf('function heartbeatMtimeMs'),
     );
+    expect(restoredSweep.trimEnd()).toBe(STOCK_HOST_SWEEP.trimEnd());
+
+    // Fallback: no marked liveness block — keep an existing heartbeat helper.
+    expect(uninstallHostSweep(STOCK_HOST_SWEEP)).toBe(STOCK_HOST_SWEEP);
+    // Fallback: no markers and no helper — append stock at EOF.
+    const appended = uninstallHostSweep('export const x = 1;\n');
+    expect(appended).toContain('function heartbeatMtimeMs');
+    expect(appended.startsWith('export const x = 1;\n')).toBe(true);
 
     const index = patchIndex(STOCK_INDEX);
     expect(index).toContain('startSessionio');
@@ -145,6 +296,9 @@ describe('patches', () => {
     expect(FILE_TRANSFORMS.map((f) => f.path)).toContain('container/agent-runner/src/poll-loop.ts');
     expect(FILE_TRANSFORMS.map((f) => f.path)).toContain(
       'container/agent-runner/src/db/messages-out.ts',
+    );
+    expect(FILE_TRANSFORMS.map((f) => f.path)).toContain(
+      'container/agent-runner/src/mcp-tools/index.ts',
     );
   });
 });
@@ -181,6 +335,30 @@ describe('install', () => {
     const removed = runUninstall(root);
     expect(removed.removed.length).toBeGreaterThan(0);
     expect(fs.existsSync(path.join(root, 'src/sessionio.ts'))).toBe(false);
+    expect(fs.existsSync(path.join(root, 'container/agent-runner/src/sessionio'))).toBe(false);
+    expect(removed.removed).toContain('container/agent-runner/src/sessionio');
+  });
+
+  it('runUninstall tolerates rmdir races on empty copied dirs', () => {
+    const root = makeFixtureRoot();
+    runInstall(root);
+    const sessionioDir = path.join(root, 'container/agent-runner/src/sessionio');
+    const originalRmdir = fs.rmdirSync.bind(fs);
+    const spy = vi.spyOn(fs, 'rmdirSync').mockImplementation(((target, opts) => {
+      // Only race the empty peer dir — do not break skill `rmSync` cleanup.
+      if (path.resolve(String(target)) === path.resolve(sessionioDir)) {
+        throw new Error('busy');
+      }
+      return originalRmdir(target, opts);
+    }) as typeof fs.rmdirSync);
+    try {
+      const removed = runUninstall(root);
+      expect(removed.root).toBe(root);
+      // Copied files still unlinked even if empty-dir cleanup fails.
+      expect(fs.existsSync(path.join(root, 'src/sessionio.ts'))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('syncSkillToFork copies skill', () => {

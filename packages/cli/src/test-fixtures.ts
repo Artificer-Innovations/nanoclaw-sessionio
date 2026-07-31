@@ -147,14 +147,32 @@ async function drainSession(session: Session): Promise<void> {
 }
 
 async function deliverMessage(
-  msg: unknown,
+  msg: { id: string; content: string },
   session: Session,
   inDb: Database.Database,
 ): Promise<string | null> {
-  void msg;
-  void session;
   void inDb;
+  const content = JSON.parse(msg.content) as { files?: string[] };
+
+  // Read file attachments from outbox if the content declares files.
+  // File I/O lives in session-manager.ts (symmetric with inbound
+  // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+  const files =
+    Array.isArray(content.files) && content.files.length > 0
+      ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
+      : undefined;
+
+  void files;
   return null;
+}
+
+function readOutboxFiles(
+  _agentGroupId: string,
+  _sessionId: string,
+  _messageId: string,
+  _names: string[],
+): Array<{ filename: string; data: Buffer }> {
+  return [];
 }
 `;
 
@@ -234,6 +252,19 @@ async function main() {
   await runPollLoop({} as never);
 }
 void main();
+`;
+
+export const STOCK_MCP_TOOLS_INDEX = `/**
+ * MCP tools barrel — imports each tool module for its side-effect
+ * \`registerTools([...])\` call, then starts the MCP server.
+ */
+import './core.js';
+import { startMcpServer } from './server.js';
+
+startMcpServer().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 `;
 
 export const STOCK_POLL_LOOP = `import { getPendingMessages, markProcessing, markCompleted, markScriptSkipped } from './db/messages-in.js';

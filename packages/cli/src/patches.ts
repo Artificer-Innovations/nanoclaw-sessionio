@@ -360,7 +360,7 @@ const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Pr
 }`;
 
 export function patchDelivery(source: string): string {
-  const names = ['delivery-import', 'delivery-drain'];
+  const names = ['delivery-import', 'delivery-drain', 'delivery-outbox'];
   let content = source;
   // Upgrade prior patch that continued with inDb=null / type-asserted deliverMessage.
   if (
@@ -369,7 +369,15 @@ export function patchDelivery(source: string): string {
   ) {
     content = uninstallDelivery(content);
   }
-  if (isFullyPatched(content, names)) return content;
+  // Upgrade installs that have drain/import but not the marked delivery-outbox,
+  // or that still carry an unmarked consumeOutbox hotfix body.
+  if (
+    isFullyPatched(content, ['delivery-import', 'delivery-drain']) &&
+    !content.includes(begin('delivery-outbox'))
+  ) {
+    content = uninstallDelivery(content);
+  }
+  if (isFullyPatched(content, names) && content.includes('consumeOutbox')) return content;
 
   content = installImport(
     content,
@@ -385,18 +393,155 @@ export function patchDelivery(source: string): string {
     'delivery drainSession',
   );
 
+  content = scavengeUnmarkedDeliveryOutbox(content);
+  if (!content.includes(begin('delivery-outbox'))) {
+    content = replaceOnce(
+      content,
+      STOCK_DELIVERY_OUTBOX,
+      marked('delivery-outbox', PATCHED_DELIVERY_OUTBOX),
+      'delivery outbox attachment staging',
+    );
+  }
+
   return content;
 }
 
+/**
+ * Locate the real `deliverMessage` declaration to splice `drainSession` before.
+ * Fixtures (and some forks) also have an early single-line stub — never use the
+ * first `indexOf('async function deliverMessage(')` match.
+ */
+function findDeliverMessageInsertIndex(content: string): number {
+  // Prefer the typed host signature (multi-line params).
+  const typed = content.search(/async function deliverMessage\(\s*\r?\n\s*msg:\s*\{/);
+  if (typed >= 0) return typed;
+  // Fall back to the last declaration when only stubs/variants exist.
+  const last = content.lastIndexOf('async function deliverMessage(');
+  if (last >= 0) return last;
+  return -1;
+}
+
 export function uninstallDelivery(source: string): string {
-  let content = uninstallMarks(source, ['delivery-drain', 'delivery-import']);
+  let content = uninstallMarks(source, ['delivery-outbox', 'delivery-drain', 'delivery-import']);
+  content = scavengeUnmarkedDeliveryOutbox(content);
   if (!content.includes('async function drainSession(session: Session): Promise<void>')) {
-    const anchor = 'async function deliverMessage(';
-    const idx = content.indexOf(anchor);
+    const idx = findDeliverMessageInsertIndex(content);
     if (idx < 0) throw new Error('Could not restore drainSession: deliverMessage anchor missing');
-    content = `${content.slice(0, idx)}${STOCK_DRAIN_SESSION}\n\n${content.slice(idx)}`;
+    // Mark removal can leave extra blank lines where the drain block was —
+    // normalize to a single blank line before the restored stock drain.
+    const before = content.slice(0, idx).replace(/\n+$/, '\n\n');
+    content = `${before}${STOCK_DRAIN_SESSION}\n\n${content.slice(idx)}`;
+  }
+  // Marked delivery-outbox removal deletes the whole block — put stock back.
+  if (
+    !content.includes('readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files')
+  ) {
+    const anchors = [
+      '// @nanoclaw-hosthooks:delivery-transform:begin',
+      '  const deliverContent =',
+      '  const platformMsgId = await deliveryAdapter.deliver(',
+      '  void files;',
+    ];
+    let inserted = false;
+    for (const anchor of anchors) {
+      const idx = content.indexOf(anchor);
+      if (idx >= 0) {
+        content = `${content.slice(0, idx)}${STOCK_DELIVERY_OUTBOX}\n${content.slice(idx)}`;
+        inserted = true;
+        break;
+      }
+    }
+    if (!inserted) {
+      throw new Error('Could not restore stock delivery outbox after uninstall');
+    }
   }
   return content;
+}
+
+/** Stock NanoClaw outbox read (filesystem mount only). */
+export const STOCK_DELIVERY_OUTBOX = `  // Read file attachments from outbox if the content declares files.
+  // File I/O lives in session-manager.ts (symmetric with inbound
+  // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+  const files =
+    Array.isArray(content.files) && content.files.length > 0
+      ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
+      : undefined;
+`;
+
+/** HTTP/loopback: consume staged mailbox bytes, then fall back to disk. */
+export const PATCHED_DELIVERY_OUTBOX = `  // Read file attachments from outbox if the content declares files.
+  // HTTP/loopback agents stage bytes on the host mailbox (no shared mount);
+  // filesystem agents write under the session outbox dir. Prefer the transport
+  // store, then fall back to disk for stock mounts.
+  let files: OutboundFile[] | undefined;
+  if (Array.isArray(content.files) && content.files.length > 0) {
+    const transport = resolveSessionTransport({
+      agentGroupId: session.agent_group_id,
+      sessionId: session.id,
+    });
+    const sessionRef = {
+      agentGroupId: session.agent_group_id,
+      sessionId: session.id,
+    };
+    // Brief retry: MCP used to POST /outbound before /outbox; give staging a
+    // moment so we don't deliver a declared attachment as text-only.
+    let fromMailbox: OutboundFile[] = [];
+    for (let attempt = 0; attempt < 5 && fromMailbox.length === 0; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 150));
+      const staged = await Promise.resolve(transport.consumeOutbox(sessionRef, msg.id));
+      fromMailbox = staged
+        .filter(
+          (f): f is { name: string; data: string } =>
+            typeof f.name === 'string' &&
+            f.name.length > 0 &&
+            typeof f.data === 'string',
+        )
+        .map((f) => ({
+          filename: f.name,
+          data: Buffer.from(f.data, 'base64'),
+        }));
+    }
+    files =
+      fromMailbox.length > 0
+        ? fromMailbox
+        : readOutboxFiles(
+            session.agent_group_id,
+            session.id,
+            msg.id,
+            content.files as string[],
+          );
+    if (!files || files.length === 0) {
+      log.warn('Outbound declared files but none were staged or on disk', {
+        messageId: msg.id,
+        sessionId: session.id,
+        declared: content.files,
+      });
+    }
+  }
+`;
+
+/**
+ * Replace unmarked consumeOutbox attachment blocks (manual hotfixes) with stock
+ * readOutboxFiles. No-op when the marked delivery-outbox block is present.
+ */
+export function scavengeUnmarkedDeliveryOutbox(source: string): string {
+  if (source.includes(begin('delivery-outbox'))) return source;
+  if (!source.includes('consumeOutbox')) {
+    // No-op: absent consumeOutbox means there is nothing to scavenge here.
+    // Stock outbox restoration (including after a bad uninstall that deleted the
+    // block entirely) is handled by uninstallDelivery.
+    return source;
+  }
+  // Match from the outbox comment through the end of the files if-block.
+  const pattern =
+    /  \/\/ Read file attachments from outbox if the content declares files\.\r?\n(?:  \/\/[^\n]*\r?\n)*  let files: OutboundFile\[\] \| undefined;\r?\n  if \(Array\.isArray\(content\.files\) && content\.files\.length > 0\) \{[\s\S]*?consumeOutbox[\s\S]*?\n  \}\r?\n/;
+  const next = source.replace(pattern, STOCK_DELIVERY_OUTBOX);
+  if (next === source) {
+    throw new Error(
+      'Could not scavenge unmarked delivery outbox (consumeOutbox present but pattern mismatch)',
+    );
+  }
+  return next;
 }
 
 export function patchHostSweep(source: string): string {
@@ -467,6 +612,15 @@ export function patchHostSweep(source: string): string {
   return content;
 }
 
+const STOCK_HEARTBEAT_MTIME_MS = `function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {
+  const hbPath = heartbeatPath(agentGroupId, sessionId);
+  try {
+    return fs.statSync(hbPath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}`;
+
 export function uninstallHostSweep(source: string): string {
   let content = source;
   const duePattern = new RegExp(
@@ -474,19 +628,21 @@ export function uninstallHostSweep(source: string): string {
     'm',
   );
   content = content.replace(duePattern, '    const dueCount = countDueMessages(inDb);\n');
-  content = uninstallMarks(content, ['host-sweep-liveness', 'host-sweep-import']);
-  if (!content.includes('function heartbeatMtimeMs')) {
-    content += `
-function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {
-  const hbPath = heartbeatPath(agentGroupId, sessionId);
-  try {
-    return fs.statSync(hbPath).mtimeMs;
-  } catch {
-    return 0;
+  // Restore heartbeatMtimeMs in place — uninstallMarks would delete the marked
+  // function and the old fallback appended stock at EOF (wrong position).
+  const livenessPattern = new RegExp(
+    `^[ \\t]*${escapeRegExp(begin('host-sweep-liveness'))}\\r?\\n[\\s\\S]*?^[ \\t]*${escapeRegExp(end('host-sweep-liveness'))}\\r?\\n?`,
+    'm',
+  );
+  if (livenessPattern.test(content)) {
+    content = content.replace(livenessPattern, `${STOCK_HEARTBEAT_MTIME_MS}\n`);
+  } else {
+    content = uninstallMarks(content, ['host-sweep-liveness']);
+    if (!content.includes('function heartbeatMtimeMs')) {
+      content += `\n${STOCK_HEARTBEAT_MTIME_MS}\n`;
+    }
   }
-}
-`;
-  }
+  content = uninstallMarks(content, ['host-sweep-import']);
   return content;
 }
 
@@ -724,6 +880,50 @@ export function uninstallRunnerIndex(source: string): string {
   return uninstallMarks(source, ['runner-register']);
 }
 
+/** Marked MCP-child peer registration (send_file / sync outbound bridge). */
+export function patchMcpToolsIndex(source: string): string {
+  const names = ['mcp-register'];
+  if (isFullyPatched(source, names)) return source;
+  let content = scavengeUnmarkedMcpSessionioRegister(source);
+  /* v8 ignore next — scavenge returns early when marked; isFullyPatched already handled that */
+  if (content.includes(begin('mcp-register'))) return content;
+
+  const firstImport = content.search(/^import /m);
+  if (firstImport < 0) throw new Error('Could not find mcp-tools import anchor');
+  const block = `${begin('mcp-register')}
+// Sessionio peer registration is optional here: writeMessageOut gates on
+// SESSIONIO_TRANSPORT via isRemotePeerMode(). Still register so peer-aware
+// call sites (if any) work inside the MCP child process.
+import { registerSessionioRunner } from '../sessionio/register.js';
+registerSessionioRunner();
+${end('mcp-register')}
+`;
+  return content.slice(0, firstImport) + block + content.slice(firstImport);
+}
+
+/**
+ * Strip unmarked MCP registerSessionioRunner boots left by pre-marker installs.
+ */
+export function scavengeUnmarkedMcpSessionioRegister(source: string): string {
+  if (source.includes(begin('mcp-register'))) return source;
+  if (!source.includes("from '../sessionio/register.js'")) return source;
+  const pattern =
+    /(?:\/\/ Sessionio peer registration is optional here:[\s\S]*?\n)?import \{ registerSessionioRunner \} from '\.\.\/sessionio\/register\.js';\r?\nregisterSessionioRunner\(\);\r?\n+/;
+  const next = source.replace(pattern, '');
+  if (next === source) {
+    throw new Error(
+      'Could not scavenge unmarked mcp-tools registerSessionioRunner (present but pattern mismatch)',
+    );
+  }
+  return next;
+}
+
+export function uninstallMcpToolsIndex(source: string): string {
+  let content = uninstallMarks(source, ['mcp-register']);
+  content = scavengeUnmarkedMcpSessionioRegister(content);
+  return content;
+}
+
 export function patchPollLoop(source: string): string {
   let content = source;
   // Upgrade stub that only declared __sessionioPeer without wiring IO,
@@ -739,11 +939,17 @@ export function patchPollLoop(source: string): string {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
     content = content.replace(/\bawait sessionioGetPendingMessages\(/g, 'getPendingMessages(');
+    content = content.replace(/\bsessionioGetPendingMessages\(/g, 'getPendingMessages(');
     content = content.replace(/\bawait sessionioWriteMessageOut\(/g, 'writeMessageOut(');
+    content = content.replace(/\bsessionioWriteMessageOut\(/g, 'writeMessageOut(');
     content = content.replace(/\bawait sessionioMarkProcessing\(/g, 'markProcessing(');
+    content = content.replace(/\bsessionioMarkProcessing\(/g, 'markProcessing(');
     content = content.replace(/\bawait sessionioMarkCompleted\(/g, 'markCompleted(');
+    content = content.replace(/\bsessionioMarkCompleted\(/g, 'markCompleted(');
     content = content.replace(/\bawait sessionioMarkScriptSkipped\(/g, 'markScriptSkipped(');
+    content = content.replace(/\bsessionioMarkScriptSkipped\(/g, 'markScriptSkipped(');
     content = content.replace(/\bawait sessionioTouchHeartbeat\(/g, 'touchHeartbeat(');
+    content = content.replace(/\bsessionioTouchHeartbeat\(/g, 'touchHeartbeat(');
     content = content.replace(
       /\(await getPendingMessages\(([^)]*)\)\)\.filter\(/g,
       'getPendingMessages($1).filter(',
@@ -1003,19 +1209,33 @@ async function sessionioTouchHeartbeat() {
 
 export function uninstallPollLoop(source: string): string {
   let content = uninstallMarks(source, ['poll-loop-peer', 'poll-loop-peer-import']);
-  content = content.replace(/\bawait sessionioGetPendingMessages\(/g, 'getPendingMessages(');
-  content = content.replace(/\bawait sessionioWriteMessageOut\(/g, 'writeMessageOut(');
-  content = content.replace(/\bawait sessionioMarkProcessing\(/g, 'markProcessing(');
-  content = content.replace(/\bawait sessionioMarkCompleted\(/g, 'markCompleted(');
-  content = content.replace(/\bawait sessionioMarkScriptSkipped\(/g, 'markScriptSkipped(');
-  content = content.replace(/\bawait sessionioTouchHeartbeat\(/g, 'touchHeartbeat(');
+  // Restore stock call sites. Match both `await sessionioX(` (normal install)
+  // and bare `sessionioX(` / `return sessionioX(...).then(...)` leftovers from
+  // partial uninstalls or hand-edited async wrappers.
+  const wrappers: Array<[string, string]> = [
+    ['sessionioGetPendingMessages', 'getPendingMessages'],
+    ['sessionioWriteMessageOut', 'writeMessageOut'],
+    ['sessionioMarkProcessing', 'markProcessing'],
+    ['sessionioMarkCompleted', 'markCompleted'],
+    ['sessionioMarkScriptSkipped', 'markScriptSkipped'],
+    ['sessionioTouchHeartbeat', 'touchHeartbeat'],
+  ];
+  for (const [from, to] of wrappers) {
+    content = content.replace(new RegExp(`\\bawait ${from}\\(`, 'g'), `${to}(`);
+    content = content.replace(new RegExp(`\\b${from}\\(`, 'g'), `${to}(`);
+  }
+  content = content.replace(
+    /return writeMessageOut\((\{[\s\S]*?\n  \})\)\.then\(\(\) => undefined\);/g,
+    'writeMessageOut($1);',
+  );
   return content;
 }
 
 const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut): number {
-  const peer = getSessionioPeer();
-  if (!peer) {
-    throw new Error('postOutboundSync called without sessionio peer');
+  // Gate on transport env — MCP tools run in a child process that never
+  // calls registerSessionioRunner(), so getSessionioPeer() is always null there.
+  if (!isRemotePeerMode()) {
+    throw new Error('postOutboundSync called without SESSIONIO_TRANSPORT=http|loopback');
   }
   let agentGroupId = '';
   try {
@@ -1025,6 +1245,58 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
   }
   const session = sessionRefFromEnv(process.env, agentGroupId);
   const baseUrl = process.env.SESSIONIO_BASE_URL ?? '';
+  const env = clearedProxyEnv(process.env);
+
+  // Stage attachments FIRST. If we POST /outbound before /outbox, the host
+  // delivery poll can consume the message with an empty mailbox and drop files.
+  let filenames: string[] = [];
+  try {
+    const parsed = JSON.parse(msg.content) as { files?: unknown };
+    filenames = Array.isArray(parsed.files)
+      ? parsed.files.filter((f): f is string => typeof f === 'string')
+      : [];
+  } catch {
+    // Malformed content — still allow text-only outbound below.
+  }
+  if (filenames.length > 0) {
+    const fsSync = require('node:fs') as typeof import('node:fs');
+    const files: Array<{ name: string; data: string }> = [];
+    for (const name of filenames) {
+      const filePath = \`/workspace/outbox/\${msg.id}/\${name}\`;
+      try {
+        if (fsSync.existsSync(filePath) && fsSync.statSync(filePath).isFile()) {
+          files.push({ name, data: fsSync.readFileSync(filePath).toString('base64') });
+        }
+      } catch {
+        // skip missing attachment
+      }
+    }
+    if (files.length > 0) {
+      const outboxBody = JSON.stringify({ messageId: msg.id, files });
+      const outboxArgs = buildOutboxSyncCurlArgs({
+        baseUrl,
+        agentGroupId: session.agentGroupId,
+        sessionId: session.sessionId,
+        token: process.env.SESSIONIO_HTTP_TOKEN,
+        body: outboxBody,
+      });
+      const outboxProc = Bun.spawnSync(outboxArgs, {
+        env,
+        // Bun.spawnSync rejects string stdin ("stdio must be an array…"); bytes work.
+        stdin: new TextEncoder().encode(outboxBody),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const outboxCode = Number(outboxProc.stdout.toString().trim());
+      if (outboxProc.exitCode !== 0 || (outboxCode !== 200 && outboxCode !== 204)) {
+        const err = outboxProc.stderr.toString().trim();
+        throw new Error(
+          \`sessionio stageOutbox failed: http=\${outboxCode} exit=\${outboxProc.exitCode} \${err}\`,
+        );
+      }
+    }
+  }
+
   const body = JSON.stringify(writeToOutboundWire(msg));
   const args = buildOutboundSyncCurlArgs({
     baseUrl,
@@ -1033,9 +1305,9 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
     token: process.env.SESSIONIO_HTTP_TOKEN,
     body,
   });
-  const env = clearedProxyEnv(process.env);
   const proc = Bun.spawnSync(args, {
     env,
+    stdin: new TextEncoder().encode(body),
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -1043,32 +1315,6 @@ const MESSAGES_OUT_PEER_HELPER = `function postOutboundSync(msg: WriteMessageOut
   if (proc.exitCode !== 0 || (code !== 200 && code !== 204)) {
     const err = proc.stderr.toString().trim();
     throw new Error(\`sessionio postOutbound failed: http=\${code} exit=\${proc.exitCode} \${err}\`);
-  }
-  // Stage outbox attachments onto the HTTP mailbox (no shared mount required).
-  try {
-    const parsed = JSON.parse(msg.content) as { files?: unknown };
-    const filenames = Array.isArray(parsed.files)
-      ? parsed.files.filter((f): f is string => typeof f === 'string')
-      : [];
-    if (filenames.length > 0) {
-      const fsSync = require('node:fs') as typeof import('node:fs');
-      const files: Array<{ name: string; data: string }> = [];
-      for (const name of filenames) {
-        const filePath = \`/workspace/outbox/\${msg.id}/\${name}\`;
-        try {
-          if (fsSync.existsSync(filePath) && fsSync.statSync(filePath).isFile()) {
-            files.push({ name, data: fsSync.readFileSync(filePath).toString('base64') });
-          }
-        } catch {
-          // skip missing attachment
-        }
-      }
-      if (files.length > 0) {
-        void peer.stageOutbox(session, msg.id, files);
-      }
-    }
-  } catch {
-    // Attachment staging is best-effort on the sync curl bridge.
   }
   return 0;
 }
@@ -1080,17 +1326,24 @@ export function patchMessagesOut(source: string): string {
   if (
     isFullyPatched(source, names) &&
     source.includes('buildOutboundSyncCurlArgs') &&
-    source.includes('stageOutbox')
+    source.includes('buildOutboxSyncCurlArgs') &&
+    source.includes('isRemotePeerMode()') &&
+    source.includes('TextEncoder().encode(outboxBody)') &&
+    source.includes('TextEncoder().encode(body)')
   ) {
     return source;
   }
 
-  // Upgrade marked helpers that still inline curl argv (pre-outbound-sync helper),
-  // or that post outbound without staging outbox attachments.
+  // Upgrade marked helpers that still gate on getSessionioPeer (MCP child has no peer),
+  // inline curl argv / -d body, or post outbound without staging outbox attachments first.
   let content = source;
   if (
     isFullyPatched(content, names) &&
-    (!content.includes('buildOutboundSyncCurlArgs') || !content.includes('stageOutbox'))
+    (!content.includes('buildOutboundSyncCurlArgs') ||
+      !content.includes('buildOutboxSyncCurlArgs') ||
+      !content.includes('isRemotePeerMode()') ||
+      !content.includes('TextEncoder().encode(outboxBody)') ||
+      !content.includes('TextEncoder().encode(body)'))
   ) {
     content = uninstallMessagesOut(content);
   }
@@ -1098,21 +1351,33 @@ export function patchMessagesOut(source: string): string {
   // Sandbox may already have an unmarked peer bridge that uses the shared helper.
   if (
     content.includes('function postOutboundSync(') &&
-    content.includes('getSessionioPeer()') &&
+    content.includes('isRemotePeerMode()') &&
     content.includes('return postOutboundSync(msg)') &&
     content.includes('buildOutboundSyncCurlArgs') &&
+    content.includes('buildOutboxSyncCurlArgs') &&
+    content.includes('TextEncoder().encode(body)') &&
     !content.includes(begin('messages-out-peer'))
   ) {
     return content;
+  }
+
+  // Legacy unmarked bridges (getSessionioPeer / stageOutbox / missing outbox-first)
+  // must be removed before we inject the marked helper — otherwise TS sees two
+  // `function postOutboundSync` declarations in the same module.
+  if (
+    content.includes('function postOutboundSync(') &&
+    !content.includes(begin('messages-out-helper'))
+  ) {
+    content = stripUnmarkedMessagesOutBridge(content);
   }
 
   if (!content.includes(begin('messages-out-import'))) {
     const firstImport = content.search(/^import /m);
     if (firstImport < 0) throw new Error('Could not find import anchor for messages-out-import');
     const block = `${begin('messages-out-import')}
-import { getSessionioPeer } from '../sessionio/register.js';
+import { isRemotePeerMode } from '../sessionio/register.js';
 import { sessionRefFromEnv, writeToOutboundWire } from '../sessionio/mailbox.js';
-import { buildOutboundSyncCurlArgs, clearedProxyEnv } from '../sessionio/outbound-sync.js';
+import { buildOutboundSyncCurlArgs, buildOutboxSyncCurlArgs, clearedProxyEnv } from '../sessionio/outbound-sync.js';
 import { getConfig } from '../config.js';
 ${end('messages-out-import')}
 `;
@@ -1144,7 +1409,7 @@ ${end('messages-out-import')}
       `export function writeMessageOut(msg: WriteMessageOut): number {
 ${marked(
   'messages-out-peer',
-  `  if (getSessionioPeer()) {
+  `  if (isRemotePeerMode()) {
     return postOutboundSync(msg);
   }`,
 )}
@@ -1156,12 +1421,50 @@ ${marked(
   return content;
 }
 
+/**
+ * Remove a hand-maintained (unmarked) postOutboundSync + peer gate so the
+ * marked installer can re-inject without duplicate declarations.
+ */
+function stripUnmarkedMessagesOutBridge(source: string): string {
+  let content = source;
+  content = content.replace(
+    /^[ \t]*if \((?:getSessionioPeer|isRemotePeerMode)\(\)\) \{\n[ \t]*return postOutboundSync\(msg\);\n[ \t]*\}\n?/gm,
+    '',
+  );
+
+  const start = content.search(/^function postOutboundSync\(/m);
+  /* v8 ignore next — gate-only leftovers after strip; callers require a function */
+  if (start < 0) return content;
+  const braceOpen = content.indexOf('{', start);
+  /* v8 ignore next — malformed signatures without a body */
+  if (braceOpen < 0) return content;
+  let depth = 0;
+  let i = braceOpen;
+  for (; i < content.length; i += 1) {
+    const ch = content[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        i += 1;
+        break;
+      }
+    }
+  }
+  let end = i;
+  while (content[end] === '\n') end += 1;
+  return content.slice(0, start) + content.slice(end);
+}
+
 export function uninstallMessagesOut(source: string): string {
-  return uninstallMarks(source, [
+  let content = uninstallMarks(source, [
     'messages-out-peer',
     'messages-out-helper',
     'messages-out-import',
   ]);
+  // Helper+peer marker removal leaves a blank-line run before writeMessageOut.
+  content = content.replace(/\n{2,}(?=export function writeMessageOut\b)/g, '\n');
+  return content;
 }
 
 export const FILE_TRANSFORMS: FileTransform[] = [
@@ -1174,7 +1477,7 @@ export const FILE_TRANSFORMS: FileTransform[] = [
     path: 'src/delivery.ts',
     transform: patchDelivery,
     uninstall: (source) => {
-      // Delivery uninstall cannot perfectly restore without stock; remove markers only.
+      // uninstallDelivery restores stock drain/outbox (and scavenges unmarked hotfixes).
       return uninstallDelivery(source);
     },
   },
@@ -1197,6 +1500,11 @@ export const FILE_TRANSFORMS: FileTransform[] = [
     path: 'container/agent-runner/src/index.ts',
     transform: patchRunnerIndex,
     uninstall: uninstallRunnerIndex,
+  },
+  {
+    path: 'container/agent-runner/src/mcp-tools/index.ts',
+    transform: patchMcpToolsIndex,
+    uninstall: uninstallMcpToolsIndex,
   },
   {
     path: 'container/agent-runner/src/poll-loop.ts',
