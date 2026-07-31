@@ -610,6 +610,15 @@ export function patchHostSweep(source: string): string {
   return content;
 }
 
+const STOCK_HEARTBEAT_MTIME_MS = `function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {
+  const hbPath = heartbeatPath(agentGroupId, sessionId);
+  try {
+    return fs.statSync(hbPath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}`;
+
 export function uninstallHostSweep(source: string): string {
   let content = source;
   const duePattern = new RegExp(
@@ -617,19 +626,21 @@ export function uninstallHostSweep(source: string): string {
     'm',
   );
   content = content.replace(duePattern, '    const dueCount = countDueMessages(inDb);\n');
-  content = uninstallMarks(content, ['host-sweep-liveness', 'host-sweep-import']);
-  if (!content.includes('function heartbeatMtimeMs')) {
-    content += `
-function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {
-  const hbPath = heartbeatPath(agentGroupId, sessionId);
-  try {
-    return fs.statSync(hbPath).mtimeMs;
-  } catch {
-    return 0;
+  // Restore heartbeatMtimeMs in place — uninstallMarks would delete the marked
+  // function and the old fallback appended stock at EOF (wrong position).
+  const livenessPattern = new RegExp(
+    `^[ \\t]*${escapeRegExp(begin('host-sweep-liveness'))}\\r?\\n[\\s\\S]*?^[ \\t]*${escapeRegExp(end('host-sweep-liveness'))}\\r?\\n?`,
+    'm',
+  );
+  if (livenessPattern.test(content)) {
+    content = content.replace(livenessPattern, `${STOCK_HEARTBEAT_MTIME_MS}\n`);
+  } else {
+    content = uninstallMarks(content, ['host-sweep-liveness']);
+    if (!content.includes('function heartbeatMtimeMs')) {
+      content += `\n${STOCK_HEARTBEAT_MTIME_MS}\n`;
+    }
   }
-}
-`;
-  }
+  content = uninstallMarks(content, ['host-sweep-import']);
   return content;
 }
 
@@ -1444,11 +1455,14 @@ function stripUnmarkedMessagesOutBridge(source: string): string {
 }
 
 export function uninstallMessagesOut(source: string): string {
-  return uninstallMarks(source, [
+  let content = uninstallMarks(source, [
     'messages-out-peer',
     'messages-out-helper',
     'messages-out-import',
   ]);
+  // Helper+peer marker removal leaves a blank-line run before writeMessageOut.
+  content = content.replace(/\n{3,}(?=export function writeMessageOut\b)/g, '\n\n');
+  return content;
 }
 
 export const FILE_TRANSFORMS: FileTransform[] = [

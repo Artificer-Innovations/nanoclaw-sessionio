@@ -268,9 +268,13 @@ async function drainSession(session: Session): Promise<void> { void session; }
   it('patches host-sweep and index', () => {
     const sweep = patchHostSweep(STOCK_HOST_SWEEP);
     expect(sweep).toContain('resolveSessionTransport');
-    expect(uninstallHostSweep(sweep)).not.toContain(
-      '@nanoclaw-sessionio:host-sweep-liveness:begin',
+    const restoredSweep = uninstallHostSweep(sweep);
+    expect(restoredSweep).not.toContain('@nanoclaw-sessionio:host-sweep-liveness:begin');
+    // Stock heartbeat helper must stay at its original site, not appended at EOF.
+    expect(restoredSweep.indexOf('function heartbeatMtimeMs')).toBe(
+      STOCK_HOST_SWEEP.indexOf('function heartbeatMtimeMs'),
     );
+    expect(restoredSweep.trimEnd()).toBe(STOCK_HOST_SWEEP.trimEnd());
 
     const index = patchIndex(STOCK_INDEX);
     expect(index).toContain('startSessionio');
