@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- Apply host `/meta` destinations and routing via `openInboundDbWritable` + `resetInboundDbCache` in the agent-runner poll-loop patch. Read-only `getInboundDb` writes failed silently on Fly volumes, leaving an empty destinations table and dropping replies addressed as `unknown:…`.
+- Apply host `/meta` destinations and routing via `openInboundDbWritable` + `resetInboundDbCache` in the agent-runner poll-loop patch. Read-only `getInboundDb` writes failed silently on Fly volumes, leaving an empty destinations table and dropping replies addressed as `unknown:…`. Log `getMeta` / dynamic-import failures inside the same `try` (the pending-messages caller swallows errors with a blank `catch`).
 
 ## 0.1.1
 

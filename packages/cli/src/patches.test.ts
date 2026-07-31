@@ -230,6 +230,8 @@ ${end('container-runner-meta')}`,
     // Cache reset must run in finally so partial writes still invalidate RO reads.
     expect(poll).toMatch(/finally \{[\s\S]*?resetInboundDbCache/);
     expect(poll).not.toMatch(/resetInboundDbCache\(\);\n  \} catch/);
+    // getMeta + import must be inside the logged try (caller swallows errors).
+    expect(poll).toMatch(/try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/);
   });
 
   it('upgrades stale poll-loop that applied /meta via read-only getInboundDb', () => {
@@ -274,6 +276,58 @@ ${end('container-runner-meta')}`,
     const upgraded = patchPollLoop(stale);
     expect(upgraded).toContain('$name');
     expect(upgraded).not.toContain('VALUES (@name,');
+  });
+
+  it('upgrades stale poll-loop that ran getMeta outside the logged try', () => {
+    const good = patchPollLoop(STOCK_POLL_LOOP);
+    // Prior shape: getMeta + import before try; failures bypass console.error and
+    // are swallowed by sessionioGetPendingMessages's blank catch.
+    const staleApply = `async function sessionioApplyHostMeta(
+  peer: NonNullable<ReturnType<typeof getSessionioPeer>>,
+  session: ReturnType<typeof sessionRefFromEnv>,
+) {
+  const meta = await peer.getMeta(session);
+  const { openInboundDbWritable, resetInboundDbCache } = await import('./db/connection.js');
+  let db: ReturnType<typeof openInboundDbWritable> | undefined;
+  try {
+    db = openInboundDbWritable();
+    if (meta.routing) {
+      db.prepare('SELECT 1').run();
+    }
+  } catch (err) {
+    console.error(
+      \`[agent-runner] sessionioApplyHostMeta failed: \${
+        err instanceof Error ? err.message : String(err)
+      }\`,
+    );
+  } finally {
+    // Always drop the RO singleton after any write attempt so partial applies
+    // (e.g. routing committed, destinations tx threw) are visible to readers.
+    if (db) {
+      try {
+        resetInboundDbCache();
+      } catch {
+        // ignore cache-reset errors
+      }
+      try {
+        db.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+  }
+}`;
+    const stale = good.replace(
+      /async function sessionioApplyHostMeta\([\s\S]*?\n\}\n\nasync function sessionioStageOutboxFiles/,
+      `${staleApply}\n\nasync function sessionioStageOutboxFiles`,
+    );
+    expect(stale).toContain(
+      'const meta = await peer.getMeta(session);\n  const { openInboundDbWritable',
+    );
+    expect(stale).not.toMatch(/try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/);
+    const upgraded = patchPollLoop(stale);
+    expect(upgraded).toMatch(/try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/);
+    expect(upgraded).toContain('sessionioApplyHostMeta failed');
   });
 
   it('upgrades stale poll-loop that only reset RO cache on full success', () => {
