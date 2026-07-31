@@ -109,11 +109,24 @@ export function runUninstall(root?: string): {
   commitWrites(pending);
 
   const removed: string[] = [];
+  const parentDirs = new Set<string>();
   for (const rule of [...HOST_COPY_RULES, ...RUNNER_COPY_RULES]) {
     const target = path.join(nanoclawRoot, rule.dest);
     if (fs.existsSync(target)) {
       fs.unlinkSync(target);
       removed.push(rule.dest);
+      parentDirs.add(path.dirname(target));
+    }
+  }
+  // Drop empty copied dirs (e.g. container/agent-runner/src/sessionio/).
+  for (const dir of [...parentDirs].sort((a, b) => b.length - a.length)) {
+    try {
+      if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+        fs.rmdirSync(dir);
+        removed.push(path.relative(nanoclawRoot, dir));
+      }
+    } catch {
+      // Non-empty or raced — leave in place.
     }
   }
   const installedSkill = path.join(nanoclawRoot, '.claude/skills/add-sessionio');

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildOutboundSyncCurlArgs, clearedProxyEnv } from './outbound-sync.js';
+import {
+  buildOutboundSyncCurlArgs,
+  buildOutboxSyncCurlArgs,
+  clearedProxyEnv,
+} from './outbound-sync.js';
 import { inboundWireToRow, sessionRefFromEnv, writeToOutboundWire } from './mailbox.js';
 
 describe('outbound-sync (MCP writeMessageOut → HTTP)', () => {
@@ -17,11 +21,14 @@ describe('outbound-sync (MCP writeMessageOut → HTTP)', () => {
     expect(args).toContain('--max-time');
     expect(args).toContain('15');
     expect(args).toContain('Authorization: Bearer secret');
+    expect(args).toContain('--data-binary');
+    expect(args).toContain('@-');
     const url = args.at(-1)!;
     expect(url).toContain('/outbound?agentGroupId=ag');
     expect(url).toContain('sessionId=s1');
     expect(url).not.toMatch(/\/$/);
-    expect(args.at(-2)).toBe('{"id":"o1"}');
+    // Body stays out of argv (piped via stdin) to avoid ARG_MAX on attachments.
+    expect(args).not.toContain('{"id":"o1"}');
   });
 
   it('requires base URL', () => {
@@ -33,6 +40,17 @@ describe('outbound-sync (MCP writeMessageOut → HTTP)', () => {
         body: '{}',
       }),
     ).toThrow(/SESSIONIO_BASE_URL/);
+  });
+
+  it('builds curl argv for /outbox staging before outbound', () => {
+    const args = buildOutboxSyncCurlArgs({
+      baseUrl: 'http://host:18765',
+      agentGroupId: 'ag',
+      sessionId: 's1',
+      body: '{"messageId":"m1","files":[]}',
+    });
+    expect(args.at(-1)).toContain('/outbox?agentGroupId=ag');
+    expect(args.at(-1)).toContain('sessionId=s1');
   });
 
   it('clears proxy env so OneCLI cannot swallow mailbox POSTs', () => {

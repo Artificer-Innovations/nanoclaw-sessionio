@@ -13,6 +13,7 @@ import {
   STOCK_MESSAGES_OUT,
   STOCK_POLL_LOOP,
   STOCK_RUNNER_INDEX,
+  STOCK_MCP_TOOLS_INDEX,
   STOCK_SESSION_MANAGER,
 } from './test-fixtures.js';
 
@@ -25,6 +26,7 @@ function makeMiniRoot(): string {
     'src/container-runner.ts': STOCK_CONTAINER_RUNNER,
     'src/index.ts': STOCK_INDEX,
     'container/agent-runner/src/index.ts': STOCK_RUNNER_INDEX,
+    'container/agent-runner/src/mcp-tools/index.ts': STOCK_MCP_TOOLS_INDEX,
     'container/agent-runner/src/poll-loop.ts': STOCK_POLL_LOOP,
     'container/agent-runner/src/db/messages-out.ts': STOCK_MESSAGES_OUT,
     '.env.example': 'FOO=1\n',

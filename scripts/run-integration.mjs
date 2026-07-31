@@ -25,6 +25,7 @@ const {
   STOCK_CONTAINER_RUNNER,
   STOCK_INDEX,
   STOCK_RUNNER_INDEX,
+  STOCK_MCP_TOOLS_INDEX,
   STOCK_POLL_LOOP,
   STOCK_MESSAGES_OUT,
 } = await import(pathToFileURL(path.join(root, 'dist/cli/test-fixtures.js')).href);
@@ -37,6 +38,7 @@ const files = {
   'src/container-runner.ts': STOCK_CONTAINER_RUNNER,
   'src/index.ts': STOCK_INDEX,
   'container/agent-runner/src/index.ts': STOCK_RUNNER_INDEX,
+  'container/agent-runner/src/mcp-tools/index.ts': STOCK_MCP_TOOLS_INDEX,
   'container/agent-runner/src/poll-loop.ts': STOCK_POLL_LOOP,
   'container/agent-runner/src/db/messages-out.ts': STOCK_MESSAGES_OUT,
   '.env.example': 'FOO=1\n',
