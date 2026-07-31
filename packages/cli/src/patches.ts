@@ -928,13 +928,23 @@ export function patchPollLoop(source: string): string {
   let content = source;
   // Upgrade stub that only declared __sessionioPeer without wiring IO,
   // or that eagerly captured the peer before registerSessionioRunner(),
-  // or that lacked stageOutbox/getMeta wiring.
+  // or that lacked stageOutbox/getMeta wiring,
+  // or that applied /meta via the read-only inbound singleton (Fly volumes),
+  // or that used better-sqlite3-style @named binds (bun:sqlite needs $keys),
+  // or that only reset the RO cache on the full-success path (partial writes),
+  // or that ran getMeta/import outside the logged try (errors swallowed by caller).
   if (
     content.includes(begin('poll-loop-peer')) &&
     (!content.includes('sessionioGetPendingMessages') ||
       content.includes('const __sessionioPeer = getSessionioPeer()') ||
       !content.includes('stageOutbox') ||
-      !content.includes('getMeta'))
+      !content.includes('getMeta') ||
+      !content.includes('openInboundDbWritable') ||
+      !content.includes('resetInboundDbCache') ||
+      !content.includes('$name') ||
+      content.includes('VALUES (@name,') ||
+      !/finally \{[\s\S]*?resetInboundDbCache/.test(content) ||
+      !/try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/.test(content))
   ) {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
@@ -960,7 +970,13 @@ export function patchPollLoop(source: string): string {
   if (
     isFullyPatched(content, names) &&
     content.includes('sessionioGetPendingMessages') &&
-    content.includes('stageOutbox')
+    content.includes('stageOutbox') &&
+    content.includes('openInboundDbWritable') &&
+    content.includes('resetInboundDbCache') &&
+    content.includes('$name') &&
+    !content.includes('VALUES (@name,') &&
+    /finally \{[\s\S]*?resetInboundDbCache/.test(content) &&
+    /try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/.test(content)
   ) {
     return content;
   }
@@ -996,33 +1012,76 @@ async function sessionioApplyHostMeta(
   peer: NonNullable<ReturnType<typeof getSessionioPeer>>,
   session: ReturnType<typeof sessionRefFromEnv>,
 ) {
-  const meta = await peer.getMeta(session);
+  // getMeta + dynamic import must live inside this try: the caller
+  // (sessionioGetPendingMessages) swallows errors with a blank catch, so
+  // transport/module failures would otherwise produce no diagnostics.
+  let db: ReturnType<typeof import('./db/connection.js').openInboundDbWritable> | undefined;
+  let resetInboundDbCache: (() => void) | undefined;
   try {
-    const { getInboundDb } = await import('./db/connection.js');
-    const db = getInboundDb();
+    const meta = await peer.getMeta(session);
+    // Fly/HTTP guests own inbound.db on the volume — host cannot write it.
+    // The read-only inbound singleton cannot project meta; open a writable
+    // handle then reset the RO cache so findByRouting / destination prompts
+    // see the projected rows.
+    const conn = await import('./db/connection.js');
+    resetInboundDbCache = conn.resetInboundDbCache;
+    db = conn.openInboundDbWritable();
     if (meta.routing) {
+      // bun:sqlite requires the $ prefix on object keys (unlike better-sqlite3).
       db.prepare(
         \`INSERT INTO session_routing (id, channel_type, platform_id, thread_id)
-         VALUES (1, @channel_type, @platform_id, @thread_id)
+         VALUES (1, \$channel_type, \$platform_id, \$thread_id)
          ON CONFLICT(id) DO UPDATE SET
            channel_type = excluded.channel_type,
            platform_id = excluded.platform_id,
            thread_id = excluded.thread_id\`,
-      ).run(meta.routing);
+      ).run({
+        \$channel_type: meta.routing.channel_type,
+        \$platform_id: meta.routing.platform_id,
+        \$thread_id: meta.routing.thread_id,
+      });
     }
     if (meta.destinations) {
       const tx = db.transaction((rows: NonNullable<typeof meta.destinations>) => {
-        db.prepare('DELETE FROM destinations').run();
-        const stmt = db.prepare(
+        db!.prepare('DELETE FROM destinations').run();
+        const stmt = db!.prepare(
           \`INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
-           VALUES (@name, @display_name, @type, @channel_type, @platform_id, @agent_group_id)\`,
+           VALUES (\$name, \$display_name, \$type, \$channel_type, \$platform_id, \$agent_group_id)\`,
         );
-        for (const row of rows) stmt.run(row);
+        for (const row of rows) {
+          stmt.run({
+            \$name: row.name,
+            \$display_name: row.display_name,
+            \$type: row.type,
+            \$channel_type: row.channel_type,
+            \$platform_id: row.platform_id,
+            \$agent_group_id: row.agent_group_id,
+          });
+        }
       });
       tx(meta.destinations);
     }
-  } catch {
-    // Local SQLite projection is best-effort (shared mount may already have routing).
+  } catch (err) {
+    console.error(
+      \`[agent-runner] sessionioApplyHostMeta failed: \${
+        err instanceof Error ? err.message : String(err)
+      }\`,
+    );
+  } finally {
+    // Always drop the RO singleton after any write attempt so partial applies
+    // (e.g. routing committed, destinations tx threw) are visible to readers.
+    if (db) {
+      try {
+        resetInboundDbCache?.();
+      } catch {
+        // ignore cache-reset errors
+      }
+      try {
+        db.close();
+      } catch {
+        // ignore close errors
+      }
+    }
   }
 }
 
