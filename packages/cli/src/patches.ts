@@ -527,7 +527,9 @@ export const PATCHED_DELIVERY_OUTBOX = `  // Read file attachments from outbox i
 export function scavengeUnmarkedDeliveryOutbox(source: string): string {
   if (source.includes(begin('delivery-outbox'))) return source;
   if (!source.includes('consumeOutbox')) {
-    // Ensure stock block exists when someone deleted it entirely after a bad uninstall.
+    // No-op: absent consumeOutbox means there is nothing to scavenge here.
+    // Stock outbox restoration (including after a bad uninstall that deleted the
+    // block entirely) is handled by uninstallDelivery.
     return source;
   }
   // Match from the outbox comment through the end of the files if-block.
@@ -1475,7 +1477,7 @@ export const FILE_TRANSFORMS: FileTransform[] = [
     path: 'src/delivery.ts',
     transform: patchDelivery,
     uninstall: (source) => {
-      // Delivery uninstall cannot perfectly restore without stock; remove markers only.
+      // uninstallDelivery restores stock drain/outbox (and scavenges unmarked hotfixes).
       return uninstallDelivery(source);
     },
   },
