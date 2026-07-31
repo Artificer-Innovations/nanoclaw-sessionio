@@ -324,9 +324,9 @@ ${end('container-runner-meta')}`,
     expect(stale).toContain(
       'const meta = await peer.getMeta(session);\n  const { openInboundDbWritable',
     );
-    expect(stale).not.toMatch(/try \{\n    const meta = await peer\.getMeta\(session\);/);
+    expect(stale).not.toMatch(/try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/);
     const upgraded = patchPollLoop(stale);
-    expect(upgraded).toMatch(/try \{\n    const meta = await peer\.getMeta\(session\);/);
+    expect(upgraded).toMatch(/try \{\r?\n\s*const meta = await peer\.getMeta\(session\);/);
     expect(upgraded).toContain('sessionioApplyHostMeta failed');
   });
 
