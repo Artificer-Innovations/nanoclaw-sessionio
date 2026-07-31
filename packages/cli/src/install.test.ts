@@ -117,6 +117,9 @@ describe('patches', () => {
     expect(restored).not.toContain('@nanoclaw-sessionio:delivery-drain:begin');
     expect(restored).not.toContain('@nanoclaw-sessionio:delivery-outbox:begin');
     expect(restored).not.toContain('resolveSessionTransport');
+    // Byte-identical round-trip — fixture has an early deliverMessage stub; the
+    // restore anchor must target the real typed declaration, not the stub.
+    expect(restored).toBe(STOCK_DELIVERY);
   });
 
   it('scavenges unmarked consumeOutbox hotfix on uninstall', () => {
@@ -196,6 +199,33 @@ describe('patches', () => {
     const upgraded = patchDelivery(withoutOutbox);
     expect(upgraded).toContain('@nanoclaw-sessionio:delivery-outbox:begin');
     expect(upgraded).toContain('consumeOutbox');
+  });
+
+  it('uninstallDelivery restores drain before stub when typed deliverMessage is absent', () => {
+    // No multi-line `msg: {` signature — exercises lastIndexOf fallback.
+    // Include stock outbox text so uninstall doesn't try to re-insert it.
+    const stubOnly = `async function deliverMessage(_msg: unknown): Promise<null> {
+  return null;
+}
+
+  // Read file attachments from outbox if the content declares files.
+  // File I/O lives in session-manager.ts (symmetric with inbound
+  // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+  const files =
+    Array.isArray(content.files) && content.files.length > 0
+      ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
+      : undefined;
+`;
+    const restored = uninstallDelivery(stubOnly);
+    expect(restored.indexOf('async function drainSession')).toBeLessThan(
+      restored.indexOf('async function deliverMessage'),
+    );
+  });
+
+  it('uninstallDelivery throws when deliverMessage anchor is missing', () => {
+    expect(() => uninstallDelivery('export const empty = 1;\n')).toThrow(
+      /deliverMessage anchor missing/,
+    );
   });
 
   it('uninstallDelivery throws when stock outbox cannot be restored', () => {

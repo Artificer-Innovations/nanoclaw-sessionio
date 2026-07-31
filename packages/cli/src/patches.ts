@@ -406,14 +406,33 @@ export function patchDelivery(source: string): string {
   return content;
 }
 
+/**
+ * Locate the real `deliverMessage` declaration to splice `drainSession` before.
+ * Fixtures (and some forks) also have an early single-line stub — never use the
+ * first `indexOf('async function deliverMessage(')` match.
+ */
+function findDeliverMessageInsertIndex(content: string): number {
+  // Prefer the typed host signature (multi-line params).
+  const typed = content.search(
+    /async function deliverMessage\(\s*\r?\n\s*msg:\s*\{/,
+  );
+  if (typed >= 0) return typed;
+  // Fall back to the last declaration when only stubs/variants exist.
+  const last = content.lastIndexOf('async function deliverMessage(');
+  if (last >= 0) return last;
+  return -1;
+}
+
 export function uninstallDelivery(source: string): string {
   let content = uninstallMarks(source, ['delivery-outbox', 'delivery-drain', 'delivery-import']);
   content = scavengeUnmarkedDeliveryOutbox(content);
   if (!content.includes('async function drainSession(session: Session): Promise<void>')) {
-    const anchor = 'async function deliverMessage(';
-    const idx = content.indexOf(anchor);
+    const idx = findDeliverMessageInsertIndex(content);
     if (idx < 0) throw new Error('Could not restore drainSession: deliverMessage anchor missing');
-    content = `${content.slice(0, idx)}${STOCK_DRAIN_SESSION}\n\n${content.slice(idx)}`;
+    // Mark removal can leave extra blank lines where the drain block was —
+    // normalize to a single blank line before the restored stock drain.
+    const before = content.slice(0, idx).replace(/\n+$/, '\n\n');
+    content = `${before}${STOCK_DRAIN_SESSION}\n\n${content.slice(idx)}`;
   }
   // Marked delivery-outbox removal deletes the whole block — put stock back.
   if (
