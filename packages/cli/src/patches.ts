@@ -1461,7 +1461,7 @@ export function uninstallMessagesOut(source: string): string {
     'messages-out-import',
   ]);
   // Helper+peer marker removal leaves a blank-line run before writeMessageOut.
-  content = content.replace(/\n{3,}(?=export function writeMessageOut\b)/g, '\n\n');
+  content = content.replace(/\n{2,}(?=export function writeMessageOut\b)/g, '\n');
   return content;
 }
 
