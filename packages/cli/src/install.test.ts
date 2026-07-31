@@ -342,9 +342,15 @@ describe('install', () => {
   it('runUninstall tolerates rmdir races on empty copied dirs', () => {
     const root = makeFixtureRoot();
     runInstall(root);
-    const spy = vi.spyOn(fs, 'rmdirSync').mockImplementation(() => {
-      throw new Error('busy');
-    });
+    const sessionioDir = path.join(root, 'container/agent-runner/src/sessionio');
+    const originalRmdir = fs.rmdirSync.bind(fs);
+    const spy = vi.spyOn(fs, 'rmdirSync').mockImplementation(((target, opts) => {
+      // Only race the empty peer dir — do not break skill `rmSync` cleanup.
+      if (path.resolve(String(target)) === path.resolve(sessionioDir)) {
+        throw new Error('busy');
+      }
+      return originalRmdir(target, opts);
+    }) as typeof fs.rmdirSync);
     try {
       const removed = runUninstall(root);
       expect(removed.root).toBe(root);
