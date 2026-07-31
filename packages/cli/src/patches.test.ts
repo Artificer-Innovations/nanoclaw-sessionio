@@ -321,7 +321,9 @@ ${end('container-runner-meta')}`,
       /async function sessionioApplyHostMeta\([\s\S]*?\n\}\n\nasync function sessionioStageOutboxFiles/,
       `${staleApply}\n\nasync function sessionioStageOutboxFiles`,
     );
-    expect(stale).toContain('const meta = await peer.getMeta(session);\n  const { openInboundDbWritable');
+    expect(stale).toContain(
+      'const meta = await peer.getMeta(session);\n  const { openInboundDbWritable',
+    );
     expect(stale).not.toMatch(/try \{\n    const meta = await peer\.getMeta\(session\);/);
     const upgraded = patchPollLoop(stale);
     expect(upgraded).toMatch(/try \{\n    const meta = await peer\.getMeta\(session\);/);
