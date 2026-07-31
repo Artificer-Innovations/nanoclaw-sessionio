@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseArgs, runCommand, isCliEntry } from './bin.js';
 import {
   patchDelivery,
@@ -276,6 +276,13 @@ async function drainSession(session: Session): Promise<void> { void session; }
     );
     expect(restoredSweep.trimEnd()).toBe(STOCK_HOST_SWEEP.trimEnd());
 
+    // Fallback: no marked liveness block — keep an existing heartbeat helper.
+    expect(uninstallHostSweep(STOCK_HOST_SWEEP)).toBe(STOCK_HOST_SWEEP);
+    // Fallback: no markers and no helper — append stock at EOF.
+    const appended = uninstallHostSweep('export const x = 1;\n');
+    expect(appended).toContain('function heartbeatMtimeMs');
+    expect(appended.startsWith('export const x = 1;\n')).toBe(true);
+
     const index = patchIndex(STOCK_INDEX);
     expect(index).toContain('startSessionio');
     const restoredIndex = uninstallIndex(index);
@@ -328,6 +335,24 @@ describe('install', () => {
     const removed = runUninstall(root);
     expect(removed.removed.length).toBeGreaterThan(0);
     expect(fs.existsSync(path.join(root, 'src/sessionio.ts'))).toBe(false);
+    expect(fs.existsSync(path.join(root, 'container/agent-runner/src/sessionio'))).toBe(false);
+    expect(removed.removed).toContain('container/agent-runner/src/sessionio');
+  });
+
+  it('runUninstall tolerates rmdir races on empty copied dirs', () => {
+    const root = makeFixtureRoot();
+    runInstall(root);
+    const spy = vi.spyOn(fs, 'rmdirSync').mockImplementation(() => {
+      throw new Error('busy');
+    });
+    try {
+      const removed = runUninstall(root);
+      expect(removed.root).toBe(root);
+      // Copied files still unlinked even if empty-dir cleanup fails.
+      expect(fs.existsSync(path.join(root, 'src/sessionio.ts'))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('syncSkillToFork copies skill', () => {
