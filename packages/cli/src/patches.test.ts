@@ -225,6 +225,39 @@ ${end('container-runner-meta')}`,
     expect(poll).toContain('sessionioApplyHostMeta failed');
   });
 
+  it('upgrades stale poll-loop that applied /meta via read-only getInboundDb', () => {
+    const good = patchPollLoop(STOCK_POLL_LOOP);
+    const roApply = `async function sessionioApplyHostMeta(
+  peer: NonNullable<ReturnType<typeof getSessionioPeer>>,
+  session: ReturnType<typeof sessionRefFromEnv>,
+) {
+  const meta = await peer.getMeta(session);
+  try {
+    const { getInboundDb } = await import('./db/connection.js');
+    const db = getInboundDb();
+    if (meta.routing) {
+      db.prepare('SELECT 1').run();
+    }
+    if (meta.destinations) {
+      db.prepare('DELETE FROM destinations').run();
+    }
+  } catch {
+    // Local SQLite projection is best-effort.
+  }
+}`;
+    const stale = good.replace(
+      /async function sessionioApplyHostMeta\([\s\S]*?\n\}\n\nasync function sessionioStageOutboxFiles/,
+      `${roApply}\n\nasync function sessionioStageOutboxFiles`,
+    );
+    expect(stale).toContain('{ getInboundDb }');
+    expect(stale).not.toContain('openInboundDbWritable');
+    const upgraded = patchPollLoop(stale);
+    expect(upgraded).toContain('openInboundDbWritable');
+    expect(upgraded).toContain('resetInboundDbCache');
+    expect(upgraded).not.toContain('{ getInboundDb }');
+    expect(upgraded).toContain('sessionioApplyHostMeta failed');
+  });
+
   it('upgrades stale poll-loop that eagerly captured the peer (ESM hoist bug)', () => {
     const good = patchPollLoop(STOCK_POLL_LOOP);
     const stale = good.replace(

@@ -928,13 +928,16 @@ export function patchPollLoop(source: string): string {
   let content = source;
   // Upgrade stub that only declared __sessionioPeer without wiring IO,
   // or that eagerly captured the peer before registerSessionioRunner(),
-  // or that lacked stageOutbox/getMeta wiring.
+  // or that lacked stageOutbox/getMeta wiring,
+  // or that applied /meta via the read-only inbound singleton (Fly volumes).
   if (
     content.includes(begin('poll-loop-peer')) &&
     (!content.includes('sessionioGetPendingMessages') ||
       content.includes('const __sessionioPeer = getSessionioPeer()') ||
       !content.includes('stageOutbox') ||
-      !content.includes('getMeta'))
+      !content.includes('getMeta') ||
+      !content.includes('openInboundDbWritable') ||
+      !content.includes('resetInboundDbCache'))
   ) {
     content = uninstallMarks(content, ['poll-loop-peer', 'poll-loop-peer-import']);
     // Restore call sites if uninstall left sessionio wrappers behind.
@@ -960,7 +963,9 @@ export function patchPollLoop(source: string): string {
   if (
     isFullyPatched(content, names) &&
     content.includes('sessionioGetPendingMessages') &&
-    content.includes('stageOutbox')
+    content.includes('stageOutbox') &&
+    content.includes('openInboundDbWritable') &&
+    content.includes('resetInboundDbCache')
   ) {
     return content;
   }
