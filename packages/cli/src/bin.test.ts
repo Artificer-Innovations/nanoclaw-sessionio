@@ -43,6 +43,13 @@ describe('bin parseArgs', () => {
   it('defaults to help', () => {
     expect(parseArgs(['node', 'x']).command).toBe('help');
   });
+
+  it('ignores --path when no value follows', () => {
+    expect(parseArgs(['node', 'x', 'install', '--dry-run', '--path'])).toEqual({
+      command: 'install',
+      path: undefined,
+    });
+  });
 });
 
 describe('bin runCommand errors', () => {
