@@ -160,12 +160,7 @@ export function patchSessionManager(source: string): string {
     const renamedExport = writeExport.startsWith('export async')
       ? `export async function filesystemWriteSessionMessage( // ${SESSIONIO_MARKER}:renamed-write`
       : `export function filesystemWriteSessionMessage( // ${SESSIONIO_MARKER}:renamed-write`;
-    content = replaceOnce(
-      content,
-      writeExport,
-      renamedExport,
-      'writeSessionMessage export',
-    );
+    content = replaceOnce(content, writeExport, renamedExport, 'writeSessionMessage export');
 
     // Real NanoClaw uses `localPath` in this docblock; keep a fallback for older fixtures.
     // Allow extra blank lines after `}` — uninstall used to leave an extra newline and
@@ -179,9 +174,7 @@ export function patchSessionManager(source: string): string {
     }
     const bodyEnd = bodyEndMatch[0];
     const docblockStart = bodyEndMatch[1];
-    const isAsync = content.includes(
-      'export async function filesystemWriteSessionMessage(',
-    );
+    const isAsync = content.includes('export async function filesystemWriteSessionMessage(');
     const writeWrapper = `${marked(
       'session-manager-write',
       `${isAsync ? 'export async function' : 'export function'} writeSessionMessage(
@@ -210,7 +203,7 @@ ${
   // waiting for the next resync tick. No-op when the sweep isn't running.
   enqueueSessionReconcile(sessionId);
 `
-      : ''
+    : ''
 }}`
       : `  updateSession(sessionId, { last_active: new Date().toISOString() });
 }`;
@@ -665,8 +658,9 @@ export function patchHostSweep(source: string): string {
 
   // v2026.10+: heartbeat/due live in reconcile-session + mailbox; host-sweep.ts
   // no longer carries these anchors. Skip when stock helpers are absent.
-  const hasHeartbeat =
-    content.includes('function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {');
+  const hasHeartbeat = content.includes(
+    'function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {',
+  );
   const hasDue = content.includes('const dueCount = countDueMessages(inDb);');
   if (!hasHeartbeat && !hasDue) {
     if (!content.includes(begin('host-sweep-skip'))) {
@@ -674,8 +668,7 @@ export function patchHostSweep(source: string): string {
         `${begin('host-sweep-skip')}
 // sessionio: host-sweep liveness/due moved upstream — no patch
 ${end('host-sweep-skip')}
-` +
-        content;
+` + content;
     }
     return content;
   }
