@@ -1560,7 +1560,8 @@ export function patchMessagesOut(source: string): string {
   if (
     content.includes('function postOutboundSync(') &&
     content.includes('isRemotePeerMode()') &&
-    content.includes('return postOutboundSync(msg)') &&
+    (content.includes('return postOutboundSync(msg)') ||
+      content.includes('return Promise.resolve(postOutboundSync(msg))')) &&
     content.includes('buildOutboundSyncCurlArgs') &&
     content.includes('buildOutboxSyncCurlArgs') &&
     content.includes('TextEncoder().encode(body)') &&
@@ -1656,7 +1657,7 @@ ${peerGate}
 function stripUnmarkedMessagesOutBridge(source: string): string {
   let content = source;
   content = content.replace(
-    /^[ \t]*if \((?:getSessionioPeer|isRemotePeerMode)\(\)\) \{\n[ \t]*return postOutboundSync\(msg\);\n[ \t]*\}\n?/gm,
+    /^[ \t]*if \((?:getSessionioPeer|isRemotePeerMode)\(\)\) \{\n[ \t]*return (?:Promise\.resolve\()?postOutboundSync\(msg\)(?:\))?;\n[ \t]*\}\n?/gm,
     '',
   );
 

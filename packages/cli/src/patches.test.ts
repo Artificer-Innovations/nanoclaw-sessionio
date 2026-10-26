@@ -456,7 +456,7 @@ import './core.js';
     expect(patched).toContain('buildOutboxSyncCurlArgs');
     expect(patched).toContain('isRemotePeerMode()');
     expect(patched).toContain('clearedProxyEnv');
-    expect(patched).toContain('return postOutboundSync(msg)');
+    expect(patched).toContain('return Promise.resolve(postOutboundSync(msg))');
     expect(patchMessagesOut(patched)).toBe(patched);
     expect(uninstallMessagesOut(patched)).not.toContain(
       '@nanoclaw-sessionio:messages-out-peer:begin',
@@ -558,8 +558,8 @@ function postOutboundSync(msg: { id: string }): number {
   return 0;
 }
 
-export function writeMessageOut(msg: { id: string }): number {
-  return postOutboundSync(msg);
+export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
+  return Promise.resolve(postOutboundSync(msg));
 }
 `;
     expect(patchMessagesOut(unmarked)).toBe(unmarked);
@@ -576,12 +576,12 @@ function postOutboundSync(msg: WriteMessageOut): number {
   return 0;
 }
 
-export function writeMessageOut(msg: WriteMessageOut): number {
+export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
   if (getSessionioPeer()) {
-    return postOutboundSync(msg);
+    return Promise.resolve(postOutboundSync(msg));
   }
   const outbound = getOutboundDb();
-  return 1;
+  return Promise.resolve(1);
 }
 `;
     const upgraded = patchMessagesOut(legacy);
@@ -591,7 +591,7 @@ export function writeMessageOut(msg: WriteMessageOut): number {
     expect(upgraded).toContain('buildOutboxSyncCurlArgs');
     expect(upgraded).not.toContain('peer.stageOutbox');
     // Legacy unmarked gate removed; marked gate is the only remaining call site.
-    expect(upgraded.match(/return postOutboundSync\(msg\);/g)).toHaveLength(1);
+    expect(upgraded.match(/return Promise\.resolve\(postOutboundSync\(msg\)\);/g)).toHaveLength(1);
   });
 
   it('throws when messages-out / index anchors are missing', () => {
@@ -601,8 +601,8 @@ export function writeMessageOut(msg: WriteMessageOut): number {
     );
     expect(() =>
       patchMessagesOut(`import x from 'y';
-export function writeMessageOut(msg: WriteMessageOut): number {
-  return 1;
+export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
+  return Promise.resolve(1);
 }
 `),
     ).toThrow(/writeMessageOut body start anchor/);

@@ -14,7 +14,7 @@ import {
 
 describe('paths', () => {
   it('locates resources', () => {
-    expect(packageRoot()).toMatch(/nanoclaw-sessionio$/);
+    expect(packageRoot()).toMatch(/nanoclaw-sessionio(-develop)?$/);
     expect(skillDir()).toContain('add-sessionio');
     expect(hostResourcesDir()).toContain('host');
     expect(runnerResourcesDir()).toContain('runner');

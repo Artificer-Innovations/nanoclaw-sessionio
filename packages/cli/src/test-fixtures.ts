@@ -47,111 +47,164 @@ function updateSession(_id: string, _patch: { last_active: string }): void {}
 `;
 
 export const STOCK_DELIVERY = `import type { Session } from './types.js';
-import Database from 'better-sqlite3';
 
-const deliveryAttempts = new Map<string, number>();
+type OutboundMessage = {
+  id: string;
+  kind: string;
+  content: string;
+  channelType: string | null;
+  platformId?: string | null;
+};
+
+const batchPreviewHooks: Array<(msgs: unknown[], session: Session) => Promise<void>> = [];
+const postDeliveryHooks: Array<(msg: OutboundMessage, session: Session, meta: { firstDelivery: boolean }) => Promise<void>> = [];
 const MAX_DELIVERY_ATTEMPTS = 5;
 
-function getAgentGroup(_id: string) {
+async function getAgentGroup(_id: string) {
   return { id: 'ag' };
 }
-function openOutboundDb(_a: string, _s: string): Database.Database {
-  return {} as Database.Database;
+async function withExistingMailboxSession<T>(
+  _a: string,
+  _s: string,
+  fn: (mailbox: {
+    getDeliveredIds: () => Set<string>;
+    getDueMessages: (delivered: Set<string>) => OutboundMessage[];
+    markDelivered: (id: string, platformMsgId: string | null) => void;
+    markDeliveryFailed: (id: string) => void;
+  }) => T,
+): Promise<T | null> {
+  return fn({
+    getDeliveredIds: () => new Set(),
+    getDueMessages: () => [],
+    markDelivered: () => undefined,
+    markDeliveryFailed: () => undefined,
+  });
 }
-function openInboundDb(_a: string, _s: string): Database.Database {
-  return {} as Database.Database;
-}
-function getDueOutboundMessages(_db: Database.Database) {
-  return [] as Array<{ id: string; kind: string; channel_type: string | null }>;
-}
-function getDeliveredIds(_db: Database.Database) {
-  return new Set<string>();
-}
-function migrateDeliveredTable(_db: Database.Database) {}
-function markDelivered(_db: Database.Database, _id: string, _p: string | null) {}
-function markDeliveryFailed(_db: Database.Database, _id: string) {}
-function pauseTypingRefreshAfterDelivery(_id: string) {}
-async function deliverMessage(_msg: unknown, _session: Session, _inDb: Database.Database) {
+async function deliverMessage(_msg: OutboundMessage, _session: Session) {
   return null;
 }
+async function clearAttemptRow(_id: string) {}
+async function recordAttemptRow(_id: string, _sessionId: string, _err: unknown) {
+  return 1;
+}
+function pauseTypingRefreshAfterDelivery(_id: string) {}
+function fanOutboundMessage(_msg: unknown, _session: Session, _group: { id: string }) {}
 const log = { error: (..._a: unknown[]) => undefined, warn: (..._a: unknown[]) => undefined };
 
 async function drainSession(session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
+  const agentGroup = await getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
 
-  let outDb: Database.Database;
-  let inDb: Database.Database;
+  // Read the queue in one short mailbox session, then deliver with NO
+  // session held open: delivery handlers (agent-to-agent routing, approval
+  // notifications, cli_request → dispatch) open their own sessions on this
+  // same key, and implementations may serialize session() per key — holding
+  // the session across delivery would deadlock them. Same re-entry class the
+  // reconciler avoids around requestWake (see reconcile-session.ts).
+  let delivered: Set<string>;
+  let pending: OutboundMessage[];
   try {
-    outDb = openOutboundDb(agentGroup.id, session.id);
-    inDb = openInboundDb(agentGroup.id, session.id);
-  } catch {
-    return; // DBs might not exist yet
+    const existing = await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) => {
+      const delivered = mailbox.getDeliveredIds();
+      return {
+        delivered,
+        pending: mailbox.getDueMessages(delivered).filter((candidate) => !delivered.has(candidate.id)),
+      };
+    });
+    if (!existing) return;
+    ({ delivered, pending } = existing);
+  } catch (err) {
+    log.error('Session mailbox delivery failed', {
+      agentGroupId: agentGroup.id,
+      sessionId: session.id,
+      err,
+    });
+    return;
   }
 
-  try {
-    // Read all due messages from outbound.db (read-only)
-    const allDue = getDueOutboundMessages(outDb);
-    if (allDue.length === 0) return;
+  for (const hook of batchPreviewHooks) {
+    try {
+      await hook(
+        pending.map(({ kind, content }) => ({ kind, content })),
+        session,
+      );
+    } catch (err) {
+      log.warn('Delivery batch-preview hook failed', { sessionId: session.id, err });
+    }
+  }
 
-    // Filter out already-delivered messages using inbound.db's delivered table
-    const delivered = getDeliveredIds(inDb);
-    const undelivered = allDue.filter((m) => !delivered.has(m.id));
-    if (undelivered.length === 0) return;
-
-    // Ensure platform_message_id column exists (migration for existing sessions)
-    migrateDeliveredTable(inDb);
-
-    for (const msg of undelivered) {
-      try {
-        const platformMsgId = await deliverMessage(msg, session, inDb);
-        markDelivered(inDb, msg.id, platformMsgId ?? null);
-        deliveryAttempts.delete(msg.id);
-
-        // Pause the typing indicator after a real user-facing message
-        // lands on the user's screen, so the client has time to visually
-        // clear the indicator before the next heartbeat tick brings it
-        // back. Skip the pause for internal traffic (system actions,
-        // agent-to-agent routing) — the user doesn't see those and
-        // shouldn't get a gap in their typing indicator for them.
-        if (msg.kind !== 'system' && msg.channel_type !== 'agent') {
-          pauseTypingRefreshAfterDelivery(session.id);
-        }
-      } catch (err) {
-        const attempts = (deliveryAttempts.get(msg.id) ?? 0) + 1;
-        deliveryAttempts.set(msg.id, attempts);
-        if (attempts >= MAX_DELIVERY_ATTEMPTS) {
-          log.error('Message delivery failed permanently, giving up', {
-            messageId: msg.id,
-            sessionId: session.id,
-            attempts,
-            err,
-          });
-          markDeliveryFailed(inDb, msg.id);
-          deliveryAttempts.delete(msg.id);
-        } else {
-          log.warn('Message delivery failed, will retry', {
-            messageId: msg.id,
-            sessionId: session.id,
-            attempt: attempts,
-            maxAttempts: MAX_DELIVERY_ATTEMPTS,
-            err,
-          });
+  for (const msg of pending) {
+    try {
+      const platformMsgId = await deliverMessage(msg, session);
+      await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) =>
+        mailbox.markDelivered(msg.id, platformMsgId ?? null),
+      );
+      const firstDelivery = delivered.size === 0;
+      delivered.add(msg.id);
+      await clearAttemptRow(msg.id);
+      if (msg.kind !== 'system' && msg.channelType !== 'agent') {
+        pauseTypingRefreshAfterDelivery(session.id);
+        if (msg.kind !== 'task_log') {
+          // Cross-session context: echo the delivered reply into the
+          // conversation's recently active sibling sessions. Unawaited — the
+          // next part of a multi-part reply must not wait on ambient writes.
+          void fanOutboundMessage(
+            {
+              id: msg.id,
+              kind: msg.kind,
+              platform_id: msg.platformId,
+              channel_type: msg.channelType,
+              content: msg.content,
+            },
+            session,
+            agentGroup,
+          );
+          for (const hook of postDeliveryHooks) {
+            try {
+              await hook(msg, session, { firstDelivery });
+            } catch (err) {
+              log.warn('Post-delivery hook failed', { messageId: msg.id, sessionId: session.id, err });
+            }
+          }
         }
       }
+    } catch (err) {
+      const attempts = await recordAttemptRow(msg.id, session.id, err);
+      if (attempts !== null && attempts >= MAX_DELIVERY_ATTEMPTS) {
+        log.error('Message delivery failed permanently, giving up', {
+          messageId: msg.id,
+          sessionId: session.id,
+          attempts,
+          err,
+        });
+        try {
+          await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) => mailbox.markDeliveryFailed(msg.id));
+          await clearAttemptRow(msg.id);
+        } catch (markErr) {
+          log.error('Failed to record permanent delivery failure', {
+            messageId: msg.id,
+            sessionId: session.id,
+            err: markErr,
+          });
+        }
+      } else {
+        log.warn('Message delivery failed, will retry', {
+          messageId: msg.id,
+          sessionId: session.id,
+          // null: the bookkeeping write itself failed; count unknown this tick.
+          attempt: attempts,
+          maxAttempts: MAX_DELIVERY_ATTEMPTS,
+          err,
+        });
+      }
     }
-  } finally {
-    outDb.close();
-    inDb.close();
   }
 }
 
 async function deliverMessage(
   msg: { id: string; content: string },
   session: Session,
-  inDb: Database.Database,
 ): Promise<string | null> {
-  void inDb;
   const content = JSON.parse(msg.content) as { files?: string[] };
 
   // Read file attachments from outbox if the content declares files.
@@ -296,12 +349,12 @@ export interface WriteMessageOut {
   recurrence?: string | null;
 }
 
-export function writeMessageOut(msg: WriteMessageOut): number {
+export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
   const outbound = getOutboundDb();
   const inbound = getInboundDb();
   void inbound;
   void msg;
   void outbound;
-  return 1;
+  return Promise.resolve(1);
 }
 `;
