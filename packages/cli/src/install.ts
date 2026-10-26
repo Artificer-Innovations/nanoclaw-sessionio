@@ -114,7 +114,7 @@ export function runUninstall(root?: string): {
     const target = path.join(nanoclawRoot, rule.dest);
     /* v8 ignore start */
     if (fs.existsSync(target)) {
-    /* v8 ignore stop */
+      /* v8 ignore stop */
       fs.unlinkSync(target);
       removed.push(rule.dest);
       parentDirs.add(path.dirname(target));
@@ -134,7 +134,7 @@ export function runUninstall(root?: string): {
   const installedSkill = path.join(nanoclawRoot, '.claude/skills/add-sessionio');
   /* v8 ignore start */
   if (fs.existsSync(installedSkill)) {
-  /* v8 ignore stop */
+    /* v8 ignore stop */
     fs.rmSync(installedSkill, { recursive: true, force: true });
     removed.push('.claude/skills/add-sessionio');
   }

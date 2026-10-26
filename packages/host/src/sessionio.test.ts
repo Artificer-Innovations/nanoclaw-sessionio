@@ -84,9 +84,9 @@ describe('sessionio registry', () => {
     expect(
       resolveTransportName({ agentGroupId: 'a', sessionId: 's', transportName: 'loopback' }),
     ).toBe('http');
-    expect(
-      resolveTransportName({ agentGroupId: 'a', sessionId: 's', transportName: '   ' }),
-    ).toBe('filesystem');
+    expect(resolveTransportName({ agentGroupId: 'a', sessionId: 's', transportName: '   ' })).toBe(
+      'filesystem',
+    );
     const first = createHttpTransport(store);
     const unregisterFirst = registerSessionTransport('custom', first);
     const unregisterSecond = registerSessionTransport(

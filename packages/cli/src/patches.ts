@@ -708,7 +708,7 @@ export function patchContainerRunner(source: string): string {
     if (!content.includes('writeSessionRouting(agentGroup.id, session.id);')) {
       /* v8 ignore start */
       if (content.includes(spawnLog)) {
-      /* v8 ignore stop */
+        /* v8 ignore stop */
         content = content.replace(
           spawnLog,
           `  writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
@@ -989,7 +989,7 @@ export function patchPollLoop(source: string): string {
 
   /* v8 ignore start */
   if (!content.includes(begin('poll-loop-peer-import'))) {
-  /* v8 ignore stop */
+    /* v8 ignore stop */
     const firstImport = content.search(/^import /m);
     if (firstImport < 0) throw new Error('Could not find import anchor for poll-loop-peer-import');
     const block = `${begin('poll-loop-peer-import')}
@@ -1005,11 +1005,11 @@ ${end('poll-loop-peer-import')}
 
   /* v8 ignore start */
   if (!content.includes(begin('poll-loop-peer'))) {
-  /* v8 ignore stop */
+    /* v8 ignore stop */
     const anchor = content.match(/^(export )?async function (poll|run|main)/m);
     /* v8 ignore start */
     if (anchor && anchor.index !== undefined) {
-    /* v8 ignore stop */
+      /* v8 ignore stop */
       content =
         content.slice(0, anchor.index) +
         marked(
@@ -1219,12 +1219,12 @@ async function sessionioTouchHeartbeat() {
   const peerEndIdx = content.indexOf(peerEnd);
   /* v8 ignore start */
   if (peerEndIdx >= 0) {
-  /* v8 ignore stop */
+    /* v8 ignore stop */
     const head = content.slice(0, peerEndIdx + peerEnd.length);
     let tail = content.slice(peerEndIdx + peerEnd.length);
     /* v8 ignore start */
     if (!tail.includes('await sessionioGetPendingMessages(')) {
-    /* v8 ignore stop */
+      /* v8 ignore stop */
       tail = tail.replace(/\bgetPendingMessages\(/g, 'await sessionioGetPendingMessages(');
       tail = tail.replace(/\bwriteMessageOut\(/g, 'await sessionioWriteMessageOut(');
       tail = tail.replace(/\bmarkProcessing\(/g, 'await sessionioMarkProcessing(');
@@ -1241,12 +1241,12 @@ async function sessionioTouchHeartbeat() {
     // In stock NanoClaw these sit *after* runPollLoop (same region as the rewrites).
     /* v8 ignore start */
     if (!tail.includes('async function deliverErrorResult(')) {
-    /* v8 ignore stop */
+      /* v8 ignore stop */
       tail = tail.replace(/^function deliverErrorResult\(/m, 'async function deliverErrorResult(');
     }
     /* v8 ignore start */
     if (!tail.includes('export async function dispatchResultText(')) {
-    /* v8 ignore stop */
+      /* v8 ignore stop */
       tail = tail.replace(
         /^export function dispatchResultText\(/m,
         'export async function dispatchResultText(',
@@ -1254,7 +1254,7 @@ async function sessionioTouchHeartbeat() {
     }
     /* v8 ignore start */
     if (!tail.includes('export async function autoAppendTaskLog(')) {
-    /* v8 ignore stop */
+      /* v8 ignore stop */
       tail = tail.replace(
         /^export function autoAppendTaskLog\(/m,
         'export async function autoAppendTaskLog(',
@@ -1262,12 +1262,12 @@ async function sessionioTouchHeartbeat() {
     }
     /* v8 ignore start */
     if (!tail.includes('async function sendToDestination(')) {
-    /* v8 ignore stop */
+      /* v8 ignore stop */
       tail = tail.replace(/^function sendToDestination\(/m, 'async function sendToDestination(');
     }
     /* v8 ignore start */
     if (!tail.includes('await dispatchResultText(')) {
-    /* v8 ignore stop */
+      /* v8 ignore stop */
       // Only call sites — do not rewrite `function deliverErrorResult(` declarations.
       tail = tail.replace(
         /(?<!function )(?<!await )dispatchResultText\(/g,
@@ -1458,7 +1458,7 @@ export function patchMessagesOut(source: string): string {
 
   /* v8 ignore start */
   if (!content.includes(begin('messages-out-import'))) {
-  /* v8 ignore stop */
+    /* v8 ignore stop */
     const firstImport = content.search(/^import /m);
     if (firstImport < 0) throw new Error('Could not find import anchor for messages-out-import');
     const block = `${begin('messages-out-import')}
@@ -1473,7 +1473,7 @@ ${end('messages-out-import')}
 
   /* v8 ignore start */
   if (!content.includes(begin('messages-out-helper'))) {
-  /* v8 ignore stop */
+    /* v8 ignore stop */
     const anchor = 'export function writeMessageOut(msg: WriteMessageOut): number {';
     if (!content.includes(anchor)) {
       throw new Error('Could not find writeMessageOut export anchor');
@@ -1488,7 +1488,7 @@ ${end('messages-out-import')}
 
   /* v8 ignore start */
   if (!content.includes(begin('messages-out-peer'))) {
-  /* v8 ignore stop */
+    /* v8 ignore stop */
     const anchor = `export function writeMessageOut(msg: WriteMessageOut): number {
   const outbound = getOutboundDb();`;
     if (!content.includes(anchor)) {
@@ -1542,7 +1542,7 @@ function stripUnmarkedMessagesOutBridge(source: string): string {
       depth -= 1;
       /* v8 ignore start */
       if (depth === 0) {
-      /* v8 ignore stop */
+        /* v8 ignore stop */
         i += 1;
         break;
       }
