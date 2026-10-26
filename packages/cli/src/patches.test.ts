@@ -3,6 +3,7 @@ import {
   patchContainerRunner,
   patchIndex,
   patchMcpToolsIndex,
+  patchHostSweep,
   patchMessagesOut,
   patchPollLoop,
   patchRunnerIndex,
@@ -592,6 +593,99 @@ export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
     expect(upgraded).not.toContain('peer.stageOutbox');
     // Legacy unmarked gate removed; marked gate is the only remaining call site.
     expect(upgraded.match(/return Promise\.resolve\(postOutboundSync\(msg\)\);/g)).toHaveLength(1);
+  });
+
+
+
+
+  it('patches async writeSessionMessage without reconcile enqueue', () => {
+    const stock = `import fs from 'fs';
+
+export async function writeSessionMessage(
+  agentGroupId: string,
+  sessionId: string,
+  message: { id: string; kind: string; timestamp: string; content: string },
+): Promise<void> {
+  void agentGroupId;
+  void message;
+  await updateSession(sessionId, { last_active: new Date().toISOString() });
+}
+
+/**
+ * If message content has attachments with base64 \`data\`, save them to
+ * the session's inbox directory and replace with \`localPath\`.
+ */
+function extractAttachmentFiles(): string {
+  return '';
+}
+
+async function updateSession(_id: string, _patch: { last_active: string }): Promise<void> {}
+`;
+    const patched = patchSessionManager(stock);
+    expect(patched).toContain('export async function writeSessionMessage');
+    expect(patched).toContain('await transport.enqueueInbound');
+  });
+
+  it('patches async writeSessionMessage with reconcile enqueue', () => {
+    const stock = `import fs from 'fs';
+
+export async function writeSessionMessage(
+  agentGroupId: string,
+  sessionId: string,
+  message: { id: string; kind: string; timestamp: string; content: string },
+): Promise<void> {
+  void agentGroupId;
+  void message;
+  await updateSession(sessionId, { last_active: new Date().toISOString() });
+  // Ask for a prompt reconcile now that the message is durable: a wake that
+  // fails transiently is retried within the queue's cadence instead of
+  // waiting for the next resync tick. No-op when the sweep isn't running.
+  enqueueSessionReconcile(sessionId);
+}
+
+/**
+ * If message content has attachments with base64 \`data\`, save them to
+ * the session's inbox directory and replace with \`localPath\`.
+ */
+function extractAttachmentFiles(): string {
+  return '';
+}
+
+async function updateSession(_id: string, _patch: { last_active: string }): Promise<void> {}
+function enqueueSessionReconcile(_id: string): void {}
+`;
+    const patched = patchSessionManager(stock);
+    expect(patched).toContain('export async function writeSessionMessage');
+    expect(patched).toContain('await transport.enqueueInbound');
+    expect(patched).toContain('enqueueSessionReconcile');
+    expect(patchSessionManager(patched)).toBe(patched);
+  });
+
+  it('skips host-sweep patch when heartbeat/due helpers are absent', () => {
+    const patched = patchHostSweep('export {};\n');
+    expect(patched).toContain('@nanoclaw-sessionio:host-sweep-skip:begin');
+    expect(patchHostSweep(patched)).toBe(patched);
+  });
+
+  it('patches mailbox writeMessageOut peer gate', () => {
+    const stock = `import { getAgentMailbox } from './mailbox.js';
+
+export interface WriteMessageOut {
+  id: string;
+  kind: string;
+  content: string;
+}
+
+export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
+  return getAgentMailbox().operations.writeMessageOut({
+    id: msg.id,
+  });
+}
+`;
+    const patched = patchMessagesOut(stock);
+    expect(patched).toContain('isRemotePeerMode()');
+    expect(patched).toContain('getAgentMailbox().operations.writeMessageOut');
+    expect(patchMessagesOut(patched)).toBe(patched);
   });
 
   it('throws when messages-out / index anchors are missing', () => {
