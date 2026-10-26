@@ -595,9 +595,6 @@ export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
     expect(upgraded.match(/return Promise\.resolve\(postOutboundSync\(msg\)\);/g)).toHaveLength(1);
   });
 
-
-
-
   it('patches async writeSessionMessage without reconcile enqueue', () => {
     const stock = `import fs from 'fs';
 
