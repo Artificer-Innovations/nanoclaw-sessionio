@@ -137,5 +137,6 @@ describe('docker-env-inject (split-brain / -e-after-image regressions)', () => {
     expect(dockerEnvInsertIndex(['run', '--label=foo', 'img'])).toBe(2);
     expect(dockerEnvInsertIndex(['run', '-e', 'A=1', '--rm', 'img'])).toBe(4);
     expect(dockerEnvInsertIndex(['docker', 'run', '--rm'])).toBe(3);
+    expect(dockerEnvInsertIndex(['docker', 'img'])).toBe(1);
   });
 });

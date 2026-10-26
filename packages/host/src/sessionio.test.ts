@@ -84,6 +84,18 @@ describe('sessionio registry', () => {
     expect(
       resolveTransportName({ agentGroupId: 'a', sessionId: 's', transportName: 'loopback' }),
     ).toBe('http');
+    expect(
+      resolveTransportName({ agentGroupId: 'a', sessionId: 's', transportName: '   ' }),
+    ).toBe('filesystem');
+    const first = createHttpTransport(store);
+    const unregisterFirst = registerSessionTransport('custom', first);
+    const unregisterSecond = registerSessionTransport(
+      'custom',
+      createHttpTransport(new HostMailboxStore()),
+    );
+    unregisterFirst();
+    expect(listRegisteredTransports()).toContain('custom');
+    unregisterSecond();
     setSessionTransportResolver(() => 'http');
     expect(resolveTransportName({ agentGroupId: 'a', sessionId: 's' })).toBe('http');
     setSessionTransportResolver(() => undefined);
