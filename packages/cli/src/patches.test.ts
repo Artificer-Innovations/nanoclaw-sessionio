@@ -5,6 +5,7 @@ import {
   patchMcpToolsIndex,
   patchHostSweep,
   patchMessagesOut,
+  uninstallHostSweep,
   patchPollLoop,
   patchRunnerIndex,
   patchSessionManager,
@@ -662,6 +663,9 @@ function enqueueSessionReconcile(_id: string): void {}
     const patched = patchHostSweep('export {};\n');
     expect(patched).toContain('@nanoclaw-sessionio:host-sweep-skip:begin');
     expect(patchHostSweep(patched)).toBe(patched);
+    const restored = uninstallHostSweep(patched);
+    expect(restored).toBe('export {};\n');
+    expect(restored).not.toContain('heartbeatMtimeMs');
   });
 
   it('patches mailbox writeMessageOut peer gate', () => {

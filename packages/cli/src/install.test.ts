@@ -108,6 +108,7 @@ describe('patches', () => {
     expect(patched).toContain('@nanoclaw-sessionio:delivery-outbox:begin');
     expect(patched).toContain('consumeOutbox');
     expect(patched).toContain('transport.pollOutbound');
+    expect(patched).toContain('mailbox.getDeliveredIds()');
     expect(patched).not.toContain('inDb as Database.Database');
     expect(patchDelivery(patched)).toBe(patched);
     const restored = uninstallDelivery(patched);

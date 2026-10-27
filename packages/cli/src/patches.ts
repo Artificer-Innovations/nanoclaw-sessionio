@@ -358,7 +358,20 @@ const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Pr
     sessionId: session.id,
   });
 
-  let delivered: Set<string>;
+  // Seed delivered from the local mailbox when present so firstDelivery keeps
+  // session-level semantics (stock used mailbox.getDeliveredIds()). Transports
+  // that only expose undelivered polls would otherwise report firstDelivery=true
+  // on every drain batch.
+  let delivered = new Set<string>();
+  try {
+    const fromMailbox = await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) =>
+      mailbox.getDeliveredIds(),
+    );
+    if (fromMailbox) delivered = fromMailbox;
+  } catch {
+    // No local mailbox (remote HTTP peer) — firstDelivery degrades to batch-local.
+  }
+
   let pending: OutboundMessage[];
   try {
     const polled = await Promise.resolve(
@@ -373,7 +386,6 @@ const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Pr
       channelType: msg.channelType ?? msg.channel_type,
       platformId: msg.platformId ?? msg.platform_id,
     }));
-    delivered = new Set<string>();
   } catch (err) {
     log.error('Session mailbox delivery failed', {
       agentGroupId: agentGroup.id,
@@ -748,6 +760,10 @@ const STOCK_HEARTBEAT_MTIME_MS = `function heartbeatMtimeMs(agentGroupId: string
 
 export function uninstallHostSweep(source: string): string {
   let content = source;
+  // v2026.10+ skip marker: install added no real patch — just drop the marker.
+  if (content.includes(begin('host-sweep-skip'))) {
+    return uninstallMarks(content, ['host-sweep-skip']);
+  }
   const duePattern = new RegExp(
     `^[ \\t]*${escapeRegExp(begin('host-sweep-due'))}\\r?\\n[\\s\\S]*?^[ \\t]*${escapeRegExp(end('host-sweep-due'))}\\r?\\n?`,
     'm',
