@@ -197,17 +197,31 @@ describe('HostMailboxStore', () => {
   it('createFilesystemTransport optional clearOutbox and countDueInbound', async () => {
     const calls: string[] = [];
     const transport = createFilesystemTransport({
-      ensureSessionFolder: () => calls.push('ensure'),
-      enqueueInbound: () => calls.push('enqueue'),
+      ensureSessionFolder: () => {
+        calls.push('ensure');
+      },
+      enqueueInbound: () => {
+        calls.push('enqueue');
+      },
       pollOutbound: () => [],
-      ackDelivered: () => calls.push('ack'),
-      ackFailed: () => calls.push('ackFailed'),
+      ackDelivered: () => {
+        calls.push('ack');
+      },
+      ackFailed: () => {
+        calls.push('ackFailed');
+      },
       getProcessingAcks: () => [],
       getLiveness: () => ({ lastHeartbeatAt: 0 }),
-      stageInbox: () => calls.push('inbox'),
+      stageInbox: () => {
+        calls.push('inbox');
+      },
       consumeOutbox: () => [{ name: 'f' }],
-      clearOutbox: () => calls.push('clear'),
-      syncSessionMeta: () => calls.push('meta'),
+      clearOutbox: () => {
+        calls.push('clear');
+      },
+      syncSessionMeta: () => {
+        calls.push('meta');
+      },
       countDueInbound: () => 3,
     });
     const session = { agentGroupId: 'a', sessionId: 's' };

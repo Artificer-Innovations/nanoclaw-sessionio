@@ -126,15 +126,25 @@ describe('filesystem helpers', () => {
     const calls: string[] = [];
     const transport = createFilesystemTransport({
       ensureSessionFolder: () => calls.push('ensure'),
-      enqueueInbound: () => calls.push('enqueue'),
+      enqueueInbound: () => {
+        calls.push('enqueue');
+      },
       pollOutbound: () => [],
-      ackDelivered: () => calls.push('ack'),
-      ackFailed: () => calls.push('ackFailed'),
+      ackDelivered: () => {
+        calls.push('ack');
+      },
+      ackFailed: () => {
+        calls.push('ackFailed');
+      },
       getProcessingAcks: () => [],
       getLiveness: () => ({ lastHeartbeatAt: 1 }),
-      stageInbox: () => calls.push('stage'),
+      stageInbox: () => {
+        calls.push('stage');
+      },
       consumeOutbox: () => [{ name: 'a.txt' }],
-      clearOutbox: () => calls.push('clear'),
+      clearOutbox: () => {
+        calls.push('clear');
+      },
     });
     transport.enqueueInbound(
       { agentGroupId: 'a', sessionId: 's' },
