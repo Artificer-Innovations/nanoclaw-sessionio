@@ -35,6 +35,7 @@ import {
   getDueOutboundMessages,
   getProcessingClaims,
   markDelivered,
+  markDeliveryFailed,
   replaceDestinations,
   syncProcessingAcks,
   countDueMessages,
@@ -60,7 +61,8 @@ function createNanoclawFilesystemDeps() {
       }
     },
     enqueueInbound(session: SessionRef, message: InboundMessage) {
-      filesystemWriteSessionMessage(session.agentGroupId, session.sessionId, message);
+      // Propagate async writes (v2026.10+ stock writeSessionMessage is Promise-returning).
+      return filesystemWriteSessionMessage(session.agentGroupId, session.sessionId, message);
     },
     pollOutbound(session: SessionRef) {
       try {
@@ -93,6 +95,14 @@ function createNanoclawFilesystemDeps() {
         messageIds.forEach((id, index) => {
           markDelivered(inDb, id, platformMessageIds?.[index] ?? null);
         });
+      } finally {
+        inDb.close();
+      }
+    },
+    ackFailed(session: SessionRef, messageIds: string[]) {
+      const inDb = openInboundDb(session.agentGroupId, session.sessionId);
+      try {
+        for (const id of messageIds) markDeliveryFailed(inDb, id);
       } finally {
         inDb.close();
       }

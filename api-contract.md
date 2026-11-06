@@ -38,6 +38,8 @@ interface SessionTransport {
   enqueueInbound(session, message): Promise<void> | void;
   pollOutbound(session): Promise<OutboundMessage[]> | OutboundMessage[];
   ackDelivered(session, messageIds, platformMessageIds?): Promise<void> | void;
+  /** Retire outbound permanently. Callers clear retry bookkeeping only after this resolves. */
+  ackFailed(session, messageIds): Promise<void> | void;
   getProcessingAcks(session): Promise<ProcessingAck[]> | ProcessingAck[];
   getLiveness(session): Promise<Liveness> | Liveness; // lastHeartbeatAt
   stageInbox(session, messageId, files): Promise<void> | void;
@@ -45,6 +47,8 @@ interface SessionTransport {
   syncSessionMeta?(session, meta): Promise<void> | void;
 }
 ```
+
+`ackFailed` is required for API v1 consumers that implement a custom transport (agenthosts / flyio / process): permanent delivery failure must retire the message before clearing attempt rows, otherwise the host will retry forever.
 
 Wire fields mirror `messages_in` / `messages_out` (incl. seq expectations at the agent UX layer).
 
