@@ -137,6 +137,11 @@ export class HostMailboxStore {
     this.touch(k);
   }
 
+  /** Retire outbound messages permanently (same splice as ackDelivered, no platform ids). */
+  ackFailed(session: SessionRef, messageIds: string[]): void {
+    this.ackDelivered(session, messageIds);
+  }
+
   getPlatformMessageId(session: SessionRef, messageId: string): string | null | undefined {
     return this.platformMessageIds.get(this.key(session))?.get(messageId);
   }
@@ -250,13 +255,14 @@ export const globalHostMailboxStore = new HostMailboxStore();
  */
 export interface FilesystemTransportDeps {
   ensureSessionFolder(session: SessionRef): void;
-  enqueueInbound(session: SessionRef, message: InboundMessage): void;
+  enqueueInbound(session: SessionRef, message: InboundMessage): Promise<void> | void;
   pollOutbound(session: SessionRef): OutboundMessage[];
   ackDelivered(
     session: SessionRef,
     messageIds: string[],
     platformMessageIds?: Array<string | null>,
   ): void;
+  ackFailed(session: SessionRef, messageIds: string[]): void;
   getProcessingAcks(session: SessionRef): ProcessingAck[];
   getLiveness(session: SessionRef): Liveness;
   stageInbox(session: SessionRef, messageId: string, files: Attachment[]): void;
@@ -271,13 +277,16 @@ export function createFilesystemTransport(deps: FilesystemTransportDeps): Sessio
   return {
     enqueueInbound(session, message) {
       deps.ensureSessionFolder(session);
-      deps.enqueueInbound(session, message);
+      return deps.enqueueInbound(session, message);
     },
     pollOutbound(session) {
       return deps.pollOutbound(session);
     },
     ackDelivered(session, messageIds, platformMessageIds) {
       deps.ackDelivered(session, messageIds, platformMessageIds);
+    },
+    ackFailed(session, messageIds) {
+      deps.ackFailed(session, messageIds);
     },
     getProcessingAcks(session) {
       return deps.getProcessingAcks(session);
@@ -315,6 +324,9 @@ export function createHttpTransport(
     },
     ackDelivered(session, messageIds, platformMessageIds) {
       store.ackDelivered(session, messageIds, platformMessageIds);
+    },
+    ackFailed(session, messageIds) {
+      store.ackFailed(session, messageIds);
     },
     getProcessingAcks(session) {
       return store.getProcessingAcks(session);

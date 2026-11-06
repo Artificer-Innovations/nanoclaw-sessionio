@@ -82,6 +82,11 @@ export interface SessionTransport {
     messageIds: string[],
     platformMessageIds?: Array<string | null>,
   ): Promise<void> | void;
+  /**
+   * Mark outbound messages as permanently failed (retired). Callers should only
+   * clear retry bookkeeping after this resolves successfully.
+   */
+  ackFailed(session: SessionRef, messageIds: string[]): Promise<void> | void;
   getProcessingAcks(session: SessionRef): Promise<ProcessingAck[]> | ProcessingAck[];
   getLiveness(session: SessionRef): Promise<Liveness> | Liveness;
   stageInbox(session: SessionRef, messageId: string, files: Attachment[]): Promise<void> | void;

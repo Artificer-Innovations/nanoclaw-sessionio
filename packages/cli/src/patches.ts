@@ -454,11 +454,12 @@ const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Pr
         });
         try {
           await Promise.resolve(
-            transport.ackFailed?.(
+            transport.ackFailed(
               { agentGroupId: agentGroup.id, sessionId: session.id },
               [msg.id],
             ),
           );
+          // Only clear retry bookkeeping after the transport retires the message.
           await clearAttemptRow(msg.id);
         } catch (markErr) {
           log.error('Failed to record permanent delivery failure', {
@@ -787,6 +788,11 @@ export function uninstallHostSweep(source: string): string {
   return content;
 }
 
+/** True when stock (sync or awaited) writeSessionRouting is present. */
+function hasWriteSessionRouting(content: string): boolean {
+  return /(?:await\s+)?writeSessionRouting\(agentGroup\.id, session\.id\);/.test(content);
+}
+
 export function patchContainerRunner(source: string): string {
   let content = source;
   // Upgrade stale env stubs (wrong insert point, missing docker -e, or no shared helper).
@@ -837,6 +843,12 @@ export function patchContainerRunner(source: string): string {
     );
   }
 
+  // Normalize sync stock call to awaited before guards so upgrades don't duplicate.
+  content = content.replace(
+    /(?<!await )writeSessionRouting\(agentGroup\.id, session\.id\);/g,
+    'await writeSessionRouting(agentGroup.id, session.id);',
+  );
+
   if (
     content.includes(begin('container-runner-meta')) &&
     content.includes('void transport.syncSessionMeta?.(') &&
@@ -844,7 +856,7 @@ export function patchContainerRunner(source: string): string {
   ) {
     content = uninstallMarks(content, ['container-runner-meta']);
     // Marker wrapped writeSessionRouting — restore the stock call if removed.
-    if (!content.includes('await writeSessionRouting(agentGroup.id, session.id);')) {
+    if (!hasWriteSessionRouting(content)) {
       /* v8 ignore start */
       if (content.includes(spawnLog)) {
         /* v8 ignore stop */
@@ -858,7 +870,7 @@ export function patchContainerRunner(source: string): string {
 
   // Stock writeSessionRouting must stay OUTSIDE the marker — uninstallMarks would
   // otherwise delete it (same failure mode as index delivery polls).
-  if (!content.includes('await writeSessionRouting(agentGroup.id, session.id);')) {
+  if (!hasWriteSessionRouting(content)) {
     if (!content.includes(spawnLog)) {
       throw new Error('Could not find container-runner writeSessionRouting or spawn log anchor');
     }
@@ -956,12 +968,10 @@ export function uninstallContainerRunner(source: string): string {
     );
   }
   // Older installs put writeSessionRouting inside container-runner-meta; restore it.
+  // Recognize both awaited and legacy sync stock calls so uninstall does not duplicate.
   const spawnLog =
     "  log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });";
-  if (
-    !next.includes('await writeSessionRouting(agentGroup.id, session.id);') &&
-    next.includes(spawnLog)
-  ) {
+  if (!hasWriteSessionRouting(next) && next.includes(spawnLog)) {
     next = next.replace(
       spawnLog,
       `  await writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,

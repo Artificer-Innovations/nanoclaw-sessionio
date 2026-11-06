@@ -67,9 +67,23 @@ describe('HostMailboxStore', () => {
       in_reply_to: null,
     });
     expect(store.pollOutbound(session)).toHaveLength(1);
+    // empty-key branch of pollOutbound (?? [])
+    expect(store.pollOutbound({ agentGroupId: 'nope', sessionId: 'none' })).toEqual([]);
     store.ackDelivered(session, ['o1']);
     expect(store.pollOutbound(session)).toHaveLength(0);
     store.ackDelivered(session, []);
+    store.enqueueOutbound(session, {
+      id: 'fail-me',
+      kind: 'chat',
+      timestamp: new Date().toISOString(),
+      platform_id: null,
+      channel_type: null,
+      thread_id: null,
+      content: '{}',
+      in_reply_to: null,
+    });
+    store.ackFailed(session, ['fail-me']);
+    expect(store.pollOutbound(session)).toHaveLength(0);
     store.enqueueOutbound(session, {
       id: 'plat',
       kind: 'chat',
@@ -156,6 +170,19 @@ describe('HostMailboxStore', () => {
       timestamp: new Date().toISOString(),
       content: '{}',
     });
+    // cover createHttpTransport.ackFailed → store.ackFailed
+    store.enqueueOutbound(session, {
+      id: 'fail',
+      kind: 'chat',
+      timestamp: new Date().toISOString(),
+      platform_id: null,
+      channel_type: null,
+      thread_id: null,
+      content: '{}',
+      in_reply_to: null,
+    });
+    transport.ackFailed(session, ['fail']);
+    expect(store.pollOutbound(session)).toEqual([]);
     expect(transport.countDueInbound?.(session)).toBe(1);
     await transport.ackDelivered(session, []);
     expect(transport.getProcessingAcks(session)).toEqual([]);
@@ -174,6 +201,7 @@ describe('HostMailboxStore', () => {
       enqueueInbound: () => calls.push('enqueue'),
       pollOutbound: () => [],
       ackDelivered: () => calls.push('ack'),
+      ackFailed: () => calls.push('ackFailed'),
       getProcessingAcks: () => [],
       getLiveness: () => ({ lastHeartbeatAt: 0 }),
       stageInbox: () => calls.push('inbox'),
@@ -195,15 +223,17 @@ describe('HostMailboxStore', () => {
     expect(transport.countDueInbound?.(session)).toBe(3);
     expect(transport.pollOutbound(session)).toEqual([]);
     await transport.ackDelivered(session, ['1'], [null]);
+    await transport.ackFailed(session, ['1']);
     expect(transport.getProcessingAcks(session)).toEqual([]);
     expect(transport.getLiveness(session)).toEqual({ lastHeartbeatAt: 0 });
-    expect(calls).toEqual(['ensure', 'enqueue', 'inbox', 'clear', 'meta', 'ack']);
+    expect(calls).toEqual(['ensure', 'enqueue', 'inbox', 'clear', 'meta', 'ack', 'ackFailed']);
 
     const bare = createFilesystemTransport({
       ensureSessionFolder: () => undefined,
       enqueueInbound: () => undefined,
       pollOutbound: () => [],
       ackDelivered: () => undefined,
+      ackFailed: () => undefined,
       getProcessingAcks: () => [],
       getLiveness: () => ({ lastHeartbeatAt: 0 }),
       stageInbox: () => undefined,

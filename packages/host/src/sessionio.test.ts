@@ -129,6 +129,7 @@ describe('filesystem helpers', () => {
       enqueueInbound: () => calls.push('enqueue'),
       pollOutbound: () => [],
       ackDelivered: () => calls.push('ack'),
+      ackFailed: () => calls.push('ackFailed'),
       getProcessingAcks: () => [],
       getLiveness: () => ({ lastHeartbeatAt: 1 }),
       stageInbox: () => calls.push('stage'),

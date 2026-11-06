@@ -19,6 +19,7 @@ export function getProcessingClaims(
   return [];
 }
 export function markDelivered(_db: unknown, _id: string, _platform: string | null): void {}
+export function markDeliveryFailed(_db: unknown, _id: string): void {}
 export function replaceDestinations(_db: unknown, _rows: unknown[]): void {}
 export function syncProcessingAcks(_inDb: unknown, _outDb: unknown): void {}
 export function countDueMessages(_db: unknown): number {
