@@ -844,6 +844,9 @@ export function patchContainerRunner(source: string): string {
   }
 
   // Normalize sync stock call to awaited before guards so upgrades don't duplicate.
+  // Intentional one-way migration: uninstall leaves `await` in place. On legacy
+  // sync hosts `await` of a non-Promise is a no-op; restoring the bare form would
+  // require remembering pre-patch shape, which we deliberately do not track here.
   content = content.replace(
     /(?<!await )writeSessionRouting\(agentGroup\.id, session\.id\);/g,
     'await writeSessionRouting(agentGroup.id, session.id);',
