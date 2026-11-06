@@ -84,6 +84,18 @@ describe('sessionio registry', () => {
     expect(
       resolveTransportName({ agentGroupId: 'a', sessionId: 's', transportName: 'loopback' }),
     ).toBe('http');
+    expect(resolveTransportName({ agentGroupId: 'a', sessionId: 's', transportName: '   ' })).toBe(
+      'filesystem',
+    );
+    const first = createHttpTransport(store);
+    const unregisterFirst = registerSessionTransport('custom', first);
+    const unregisterSecond = registerSessionTransport(
+      'custom',
+      createHttpTransport(new HostMailboxStore()),
+    );
+    unregisterFirst();
+    expect(listRegisteredTransports()).toContain('custom');
+    unregisterSecond();
     setSessionTransportResolver(() => 'http');
     expect(resolveTransportName({ agentGroupId: 'a', sessionId: 's' })).toBe('http');
     setSessionTransportResolver(() => undefined);
@@ -114,14 +126,25 @@ describe('filesystem helpers', () => {
     const calls: string[] = [];
     const transport = createFilesystemTransport({
       ensureSessionFolder: () => calls.push('ensure'),
-      enqueueInbound: () => calls.push('enqueue'),
+      enqueueInbound: () => {
+        calls.push('enqueue');
+      },
       pollOutbound: () => [],
-      ackDelivered: () => calls.push('ack'),
+      ackDelivered: () => {
+        calls.push('ack');
+      },
+      ackFailed: () => {
+        calls.push('ackFailed');
+      },
       getProcessingAcks: () => [],
       getLiveness: () => ({ lastHeartbeatAt: 1 }),
-      stageInbox: () => calls.push('stage'),
+      stageInbox: () => {
+        calls.push('stage');
+      },
       consumeOutbox: () => [{ name: 'a.txt' }],
-      clearOutbox: () => calls.push('clear'),
+      clearOutbox: () => {
+        calls.push('clear');
+      },
     });
     transport.enqueueInbound(
       { agentGroupId: 'a', sessionId: 's' },

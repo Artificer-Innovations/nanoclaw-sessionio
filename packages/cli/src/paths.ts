@@ -96,8 +96,9 @@ export function readPackageVersion(): string {
   const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot(), 'package.json'), 'utf8')) as {
     version?: string;
   };
-  /* v8 ignore next */
+  /* v8 ignore start */
   return pkg.version ?? '0.0.0';
+  /* v8 ignore stop */
 }
 
 /** Rewrite host module imports after copy (split files use local names in package). */

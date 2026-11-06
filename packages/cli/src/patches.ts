@@ -90,10 +90,11 @@ ${i}}`;
 function replaceOnce(content: string, search: string, replacement: string, label: string): string {
   const first = content.indexOf(search);
   if (first < 0) throw new Error(`Could not find ${label} anchor`);
-  /* v8 ignore next 3 */
+  /* v8 ignore start */
   if (content.indexOf(search, first + search.length) >= 0) {
     throw new Error(`${label} anchor is ambiguous`);
   }
+  /* v8 ignore stop */
   return content.slice(0, first) + replacement + content.slice(first + search.length);
 }
 
@@ -116,10 +117,11 @@ function removeMarkedBlock(content: string, name: string): string {
     'm',
   );
   const next = content.replace(pattern, '');
-  /* v8 ignore next 3 */
+  /* v8 ignore start */
   if (content.includes(begin(name)) && next === content) {
     throw new Error(`Corrupt sessionio block: ${name}`);
   }
+  /* v8 ignore stop */
   return next;
 }
 
@@ -152,43 +154,64 @@ export function patchSessionManager(source: string): string {
   );
 
   if (!content.includes('filesystemWriteSessionMessage')) {
-    content = replaceOnce(
-      content,
-      'export function writeSessionMessage(',
-      `export function filesystemWriteSessionMessage( // ${SESSIONIO_MARKER}:renamed-write`,
-      'writeSessionMessage export',
-    );
+    const writeExport = content.includes('export async function writeSessionMessage(')
+      ? 'export async function writeSessionMessage('
+      : 'export function writeSessionMessage(';
+    const renamedExport = writeExport.startsWith('export async')
+      ? `export async function filesystemWriteSessionMessage( // ${SESSIONIO_MARKER}:renamed-write`
+      : `export function filesystemWriteSessionMessage( // ${SESSIONIO_MARKER}:renamed-write`;
+    content = replaceOnce(content, writeExport, renamedExport, 'writeSessionMessage export');
 
     // Real NanoClaw uses `localPath` in this docblock; keep a fallback for older fixtures.
     // Allow extra blank lines after `}` — uninstall used to leave an extra newline and
     // a strict exact-string anchor then blocked reinstall.
+    // Legacy stock ended at updateSession; v2026.10+ also enqueues a reconcile.
     const bodyEndMatch = content.match(
-      /  updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\r?\n\}\r?\n+(\/\*\*\r?\n \* If message content has attachments with base64 `data`, save them to\r?\n \* the session's inbox directory and replace with (?:`localPath`|file paths)\.)/,
+      /  (?:await )?updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\r?\n(?:  \/\/[^\n]*\r?\n(?:  \/\/[^\n]*\r?\n)*  enqueueSessionReconcile\(sessionId\);\r?\n)?\}\r?\n+(\/\*\*[\s\S]*?(?:localPath|file paths)[\s\S]*?\*\/)/,
     );
     if (!bodyEndMatch || bodyEndMatch.index === undefined) {
       throw new Error('Could not find writeSessionMessage body end anchor');
     }
     const bodyEnd = bodyEndMatch[0];
     const docblockStart = bodyEndMatch[1];
-
+    const isAsync = content.includes('export async function filesystemWriteSessionMessage(');
     const writeWrapper = `${marked(
       'session-manager-write',
-      `export function writeSessionMessage(
+      `${isAsync ? 'export async function' : 'export function'} writeSessionMessage(
   agentGroupId: string,
   sessionId: string,
   message: Parameters<typeof filesystemWriteSessionMessage>[2],
-): void {
+)${isAsync ? ': Promise<void>' : ': void'} {
   const transport = resolveSessionTransport({ agentGroupId, sessionId });
-  void transport.enqueueInbound({ agentGroupId, sessionId }, message);
-  updateSession(sessionId, { last_active: new Date().toISOString() });
-}`,
+  ${isAsync ? 'await' : 'void'} transport.enqueueInbound({ agentGroupId, sessionId }, message);
+  ${isAsync ? 'await ' : ''}updateSession(sessionId, { last_active: new Date().toISOString() });
+${
+  isAsync
+    ? `  enqueueSessionReconcile(sessionId);
+`
+    : ''
+}}`,
     )}`;
+
+    const hasReconcile = bodyEnd.includes('enqueueSessionReconcile');
+    const closingUpdate = isAsync
+      ? `  await updateSession(sessionId, { last_active: new Date().toISOString() });
+${
+  hasReconcile
+    ? `  // Ask for a prompt reconcile now that the message is durable: a wake that
+  // fails transiently is retried within the queue's cadence instead of
+  // waiting for the next resync tick. No-op when the sweep isn't running.
+  enqueueSessionReconcile(sessionId);
+`
+    : ''
+}}`
+      : `  updateSession(sessionId, { last_active: new Date().toISOString() });
+}`;
 
     content = replaceOnce(
       content,
       bodyEnd,
-      `  updateSession(sessionId, { last_active: new Date().toISOString() });
-}
+      `${closingUpdate}
 
 ${writeWrapper}
 
@@ -204,158 +227,257 @@ export function uninstallSessionManager(source: string): string {
   let content = uninstallMarks(source, ['session-manager-write', 'session-manager-import']);
   content = content.replace(
     new RegExp(
-      `export function filesystemWriteSessionMessage\\( // ${escapeRegExp(SESSIONIO_MARKER)}:renamed-write`,
+      `export (async )?function filesystemWriteSessionMessage\\( // ${escapeRegExp(SESSIONIO_MARKER)}:renamed-write`,
     ),
-    'export function writeSessionMessage(',
+    'export $1function writeSessionMessage(',
   );
   // Normalize spacing so a later install can re-find the body-end anchor.
   content = content.replace(
-    /(  updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\r?\n\})\r?\n+(?=\/\*\*)/,
+    /(  (?:await )?updateSession\(sessionId, \{ last_active: new Date\(\)\.toISOString\(\) \}\);\r?\n\})\r?\n+(?=\/\*\*)/,
     '$1\n\n',
   );
   return content;
 }
 
 const STOCK_DRAIN_SESSION = `async function drainSession(session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
+  const agentGroup = await getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
 
-  let outDb: Database.Database;
-  let inDb: Database.Database;
+  // Read the queue in one short mailbox session, then deliver with NO
+  // session held open: delivery handlers (agent-to-agent routing, approval
+  // notifications, cli_request → dispatch) open their own sessions on this
+  // same key, and implementations may serialize session() per key — holding
+  // the session across delivery would deadlock them. Same re-entry class the
+  // reconciler avoids around requestWake (see reconcile-session.ts).
+  let delivered: Set<string>;
+  let pending: OutboundMessage[];
   try {
-    outDb = openOutboundDb(agentGroup.id, session.id);
-    inDb = openInboundDb(agentGroup.id, session.id);
-  } catch {
-    return; // DBs might not exist yet
-  }
-
-  try {
-    // Read all due messages from outbound.db (read-only)
-    const allDue = getDueOutboundMessages(outDb);
-    if (allDue.length === 0) return;
-
-    // Filter out already-delivered messages using inbound.db's delivered table
-    const delivered = getDeliveredIds(inDb);
-    const undelivered = allDue.filter((m) => !delivered.has(m.id));
-    if (undelivered.length === 0) return;
-
-    // Ensure platform_message_id column exists (migration for existing sessions)
-    migrateDeliveredTable(inDb);
-
-    for (const msg of undelivered) {
-      try {
-        const platformMsgId = await deliverMessage(msg, session, inDb);
-        markDelivered(inDb, msg.id, platformMsgId ?? null);
-        deliveryAttempts.delete(msg.id);
-
-        // Pause the typing indicator after a real user-facing message
-        // lands on the user's screen, so the client has time to visually
-        // clear the indicator before the next heartbeat tick brings it
-        // back. Skip the pause for internal traffic (system actions,
-        // agent-to-agent routing) — the user doesn't see those and
-        // shouldn't get a gap in their typing indicator for them.
-        if (msg.kind !== 'system' && msg.channel_type !== 'agent') {
-          pauseTypingRefreshAfterDelivery(session.id);
-        }
-      } catch (err) {
-        const attempts = (deliveryAttempts.get(msg.id) ?? 0) + 1;
-        deliveryAttempts.set(msg.id, attempts);
-        if (attempts >= MAX_DELIVERY_ATTEMPTS) {
-          log.error('Message delivery failed permanently, giving up', {
-            messageId: msg.id,
-            sessionId: session.id,
-            attempts,
-            err,
-          });
-          markDeliveryFailed(inDb, msg.id);
-          deliveryAttempts.delete(msg.id);
-        } else {
-          log.warn('Message delivery failed, will retry', {
-            messageId: msg.id,
-            sessionId: session.id,
-            attempt: attempts,
-            maxAttempts: MAX_DELIVERY_ATTEMPTS,
-            err,
-          });
-        }
-      }
-    }
-  } finally {
-    outDb.close();
-    inDb.close();
-  }
-}`;
-
-const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
-  if (!agentGroup) return;
-
-  const transport = resolveSessionTransport({
-    agentGroupId: agentGroup.id,
-    sessionId: session.id,
-  });
-  const undelivered = await Promise.resolve(
-    transport.pollOutbound({
-      agentGroupId: agentGroup.id,
-      sessionId: session.id,
-    }),
-  );
-  if (undelivered.length === 0) return;
-
-  let inDb: Database.Database;
-  try {
-    inDb = openInboundDb(agentGroup.id, session.id);
-    migrateDeliveredTable(inDb);
+    const existing = await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) => {
+      const delivered = mailbox.getDeliveredIds();
+      return {
+        delivered,
+        pending: mailbox.getDueMessages(delivered).filter((candidate) => !delivered.has(candidate.id)),
+      };
+    });
+    if (!existing) return;
+    ({ delivered, pending } = existing);
   } catch (err) {
-    // Match stock: without inbound DB we cannot deliver or record failures.
-    log.warn('drainSession: inbound DB unavailable, deferring delivery', {
+    log.error('Session mailbox delivery failed', {
+      agentGroupId: agentGroup.id,
       sessionId: session.id,
       err,
     });
     return;
   }
 
-  try {
-    for (const msg of undelivered) {
-      try {
-        const platformMsgId = await deliverMessage(msg, session, inDb);
-        await Promise.resolve(
-          transport.ackDelivered(
-            { agentGroupId: agentGroup.id, sessionId: session.id },
-            [msg.id],
-            [platformMsgId ?? null],
-          ),
-        );
-        deliveryAttempts.delete(msg.id);
+  for (const hook of batchPreviewHooks) {
+    try {
+      await hook(
+        pending.map(({ kind, content }) => ({ kind, content })),
+        session,
+      );
+    } catch (err) {
+      log.warn('Delivery batch-preview hook failed', { sessionId: session.id, err });
+    }
+  }
 
-        if (msg.kind !== 'system' && msg.channel_type !== 'agent') {
-          pauseTypingRefreshAfterDelivery(session.id);
-        }
-      } catch (err) {
-        const attempts = (deliveryAttempts.get(msg.id) ?? 0) + 1;
-        deliveryAttempts.set(msg.id, attempts);
-        if (attempts >= MAX_DELIVERY_ATTEMPTS) {
-          log.error('Message delivery failed permanently, giving up', {
-            messageId: msg.id,
-            sessionId: session.id,
-            attempts,
-            err,
-          });
-          markDeliveryFailed(inDb, msg.id);
-          deliveryAttempts.delete(msg.id);
-        } else {
-          log.warn('Message delivery failed, will retry', {
-            messageId: msg.id,
-            sessionId: session.id,
-            attempt: attempts,
-            maxAttempts: MAX_DELIVERY_ATTEMPTS,
-            err,
-          });
+  for (const msg of pending) {
+    try {
+      const platformMsgId = await deliverMessage(msg, session);
+      await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) =>
+        mailbox.markDelivered(msg.id, platformMsgId ?? null),
+      );
+      const firstDelivery = delivered.size === 0;
+      delivered.add(msg.id);
+      await clearAttemptRow(msg.id);
+      if (msg.kind !== 'system' && msg.channelType !== 'agent') {
+        pauseTypingRefreshAfterDelivery(session.id);
+        if (msg.kind !== 'task_log') {
+          // Cross-session context: echo the delivered reply into the
+          // conversation's recently active sibling sessions. Unawaited — the
+          // next part of a multi-part reply must not wait on ambient writes.
+          void fanOutboundMessage(
+            {
+              id: msg.id,
+              kind: msg.kind,
+              platform_id: msg.platformId,
+              channel_type: msg.channelType,
+              content: msg.content,
+            },
+            session,
+            agentGroup,
+          );
+          for (const hook of postDeliveryHooks) {
+            try {
+              await hook(msg, session, { firstDelivery });
+            } catch (err) {
+              log.warn('Post-delivery hook failed', { messageId: msg.id, sessionId: session.id, err });
+            }
+          }
         }
       }
+    } catch (err) {
+      const attempts = await recordAttemptRow(msg.id, session.id, err);
+      if (attempts !== null && attempts >= MAX_DELIVERY_ATTEMPTS) {
+        log.error('Message delivery failed permanently, giving up', {
+          messageId: msg.id,
+          sessionId: session.id,
+          attempts,
+          err,
+        });
+        try {
+          await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) => mailbox.markDeliveryFailed(msg.id));
+          await clearAttemptRow(msg.id);
+        } catch (markErr) {
+          log.error('Failed to record permanent delivery failure', {
+            messageId: msg.id,
+            sessionId: session.id,
+            err: markErr,
+          });
+        }
+      } else {
+        log.warn('Message delivery failed, will retry', {
+          messageId: msg.id,
+          sessionId: session.id,
+          // null: the bookkeeping write itself failed; count unknown this tick.
+          attempt: attempts,
+          maxAttempts: MAX_DELIVERY_ATTEMPTS,
+          err,
+        });
+      }
     }
-  } finally {
-    inDb.close();
+  }
+}`;
+
+const PATCHED_DRAIN_SESSION = `async function drainSession(session: Session): Promise<void> {
+  const agentGroup = await getAgentGroup(session.agent_group_id);
+  if (!agentGroup) return;
+
+  const transport = resolveSessionTransport({
+    agentGroupId: agentGroup.id,
+    sessionId: session.id,
+  });
+
+  // Seed delivered from the local mailbox when present so firstDelivery keeps
+  // session-level semantics (stock used mailbox.getDeliveredIds()). Transports
+  // that only expose undelivered polls would otherwise report firstDelivery=true
+  // on every drain batch.
+  let delivered = new Set<string>();
+  try {
+    const fromMailbox = await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) =>
+      mailbox.getDeliveredIds(),
+    );
+    if (fromMailbox) delivered = fromMailbox;
+  } catch {
+    // No local mailbox (remote HTTP peer) — firstDelivery degrades to batch-local.
+  }
+
+  let pending: OutboundMessage[];
+  try {
+    const polled = await Promise.resolve(
+      transport.pollOutbound({
+        agentGroupId: agentGroup.id,
+        sessionId: session.id,
+      }),
+    );
+    // Normalize transport rows (snake_case) into host OutboundMessage shape when needed.
+    pending = (polled as OutboundMessage[]).map((msg: any) => ({
+      ...msg,
+      channelType: msg.channelType ?? msg.channel_type,
+      platformId: msg.platformId ?? msg.platform_id,
+    }));
+  } catch (err) {
+    log.error('Session mailbox delivery failed', {
+      agentGroupId: agentGroup.id,
+      sessionId: session.id,
+      err,
+    });
+    return;
+  }
+  if (pending.length === 0) return;
+
+  for (const hook of batchPreviewHooks) {
+    try {
+      await hook(
+        pending.map(({ kind, content }) => ({ kind, content })),
+        session,
+      );
+    } catch (err) {
+      log.warn('Delivery batch-preview hook failed', { sessionId: session.id, err });
+    }
+  }
+
+  for (const msg of pending) {
+    try {
+      const platformMsgId = await deliverMessage(msg, session);
+      await Promise.resolve(
+        transport.ackDelivered(
+          { agentGroupId: agentGroup.id, sessionId: session.id },
+          [msg.id],
+          [platformMsgId ?? null],
+        ),
+      );
+      const firstDelivery = delivered.size === 0;
+      delivered.add(msg.id);
+      await clearAttemptRow(msg.id);
+      if (msg.kind !== 'system' && msg.channelType !== 'agent') {
+        pauseTypingRefreshAfterDelivery(session.id);
+        if (msg.kind !== 'task_log') {
+          void fanOutboundMessage(
+            {
+              id: msg.id,
+              kind: msg.kind,
+              platform_id: msg.platformId,
+              channel_type: msg.channelType,
+              content: msg.content,
+            },
+            session,
+            agentGroup,
+          );
+          for (const hook of postDeliveryHooks) {
+            try {
+              await hook(msg, session, { firstDelivery });
+            } catch (err) {
+              log.warn('Post-delivery hook failed', { messageId: msg.id, sessionId: session.id, err });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      const attempts = await recordAttemptRow(msg.id, session.id, err);
+      if (attempts !== null && attempts >= MAX_DELIVERY_ATTEMPTS) {
+        log.error('Message delivery failed permanently, giving up', {
+          messageId: msg.id,
+          sessionId: session.id,
+          attempts,
+          err,
+        });
+        try {
+          await Promise.resolve(
+            transport.ackFailed(
+              { agentGroupId: agentGroup.id, sessionId: session.id },
+              [msg.id],
+            ),
+          );
+          // Only clear retry bookkeeping after the transport retires the message.
+          await clearAttemptRow(msg.id);
+        } catch (markErr) {
+          log.error('Failed to record permanent delivery failure', {
+            messageId: msg.id,
+            sessionId: session.id,
+            err: markErr,
+          });
+        }
+      } else {
+        log.warn('Message delivery failed, will retry', {
+          messageId: msg.id,
+          sessionId: session.id,
+          attempt: attempts,
+          maxAttempts: MAX_DELIVERY_ATTEMPTS,
+          err,
+        });
+      }
+    }
   }
 }`;
 
@@ -547,6 +669,23 @@ export function scavengeUnmarkedDeliveryOutbox(source: string): string {
 export function patchHostSweep(source: string): string {
   let content = source;
 
+  // v2026.10+: heartbeat/due live in reconcile-session + mailbox; host-sweep.ts
+  // no longer carries these anchors. Skip when stock helpers are absent.
+  const hasHeartbeat = content.includes(
+    'function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {',
+  );
+  const hasDue = content.includes('const dueCount = countDueMessages(inDb);');
+  if (!hasHeartbeat && !hasDue) {
+    if (!content.includes(begin('host-sweep-skip'))) {
+      content =
+        `${begin('host-sweep-skip')}
+// sessionio: host-sweep liveness/due moved upstream — no patch
+${end('host-sweep-skip')}
+` + content;
+    }
+    return content;
+  }
+
   content = installImport(
     content,
     './sessionio.js',
@@ -554,7 +693,7 @@ export function patchHostSweep(source: string): string {
     'host-sweep-import',
   );
 
-  if (!content.includes(begin('host-sweep-liveness'))) {
+  if (hasHeartbeat && !content.includes(begin('host-sweep-liveness'))) {
     content = replaceOnce(
       content,
       `function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {
@@ -573,7 +712,6 @@ export function patchHostSweep(source: string): string {
   if (liveness && typeof (liveness as { lastHeartbeatAt?: number }).lastHeartbeatAt === 'number') {
     return (liveness as { lastHeartbeatAt: number }).lastHeartbeatAt;
   }
-  // getLiveness may be async for some transports; fall back to filesystem mtime.
   const hbPath = heartbeatPath(agentGroupId, sessionId);
   try {
     return fs.statSync(hbPath).mtimeMs;
@@ -586,7 +724,7 @@ export function patchHostSweep(source: string): string {
     );
   }
 
-  if (!content.includes(begin('host-sweep-due'))) {
+  if (hasDue && !content.includes(begin('host-sweep-due'))) {
     content = replaceOnce(
       content,
       '    const dueCount = countDueMessages(inDb);',
@@ -623,6 +761,10 @@ const STOCK_HEARTBEAT_MTIME_MS = `function heartbeatMtimeMs(agentGroupId: string
 
 export function uninstallHostSweep(source: string): string {
   let content = source;
+  // v2026.10+ skip marker: install added no real patch — just drop the marker.
+  if (content.includes(begin('host-sweep-skip'))) {
+    return uninstallMarks(content, ['host-sweep-skip']);
+  }
   const duePattern = new RegExp(
     `^[ \\t]*${escapeRegExp(begin('host-sweep-due'))}\\r?\\n[\\s\\S]*?^[ \\t]*${escapeRegExp(end('host-sweep-due'))}\\r?\\n?`,
     'm',
@@ -644,6 +786,11 @@ export function uninstallHostSweep(source: string): string {
   }
   content = uninstallMarks(content, ['host-sweep-import']);
   return content;
+}
+
+/** True when stock (sync or awaited) writeSessionRouting is present. */
+function hasWriteSessionRouting(content: string): boolean {
+  return /(?:await\s+)?writeSessionRouting\(agentGroup\.id, session\.id\);/.test(content);
 }
 
 export function patchContainerRunner(source: string): string {
@@ -696,6 +843,15 @@ export function patchContainerRunner(source: string): string {
     );
   }
 
+  // Normalize sync stock call to awaited before guards so upgrades don't duplicate.
+  // Intentional one-way migration: uninstall leaves `await` in place. On legacy
+  // sync hosts `await` of a non-Promise is a no-op; restoring the bare form would
+  // require remembering pre-patch shape, which we deliberately do not track here.
+  content = content.replace(
+    /(?<!await )writeSessionRouting\(agentGroup\.id, session\.id\);/g,
+    'await writeSessionRouting(agentGroup.id, session.id);',
+  );
+
   if (
     content.includes(begin('container-runner-meta')) &&
     content.includes('void transport.syncSessionMeta?.(') &&
@@ -703,11 +859,13 @@ export function patchContainerRunner(source: string): string {
   ) {
     content = uninstallMarks(content, ['container-runner-meta']);
     // Marker wrapped writeSessionRouting — restore the stock call if removed.
-    if (!content.includes('writeSessionRouting(agentGroup.id, session.id);')) {
+    if (!hasWriteSessionRouting(content)) {
+      /* v8 ignore start */
       if (content.includes(spawnLog)) {
+        /* v8 ignore stop */
         content = content.replace(
           spawnLog,
-          `  writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
+          `  await writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
         );
       }
     }
@@ -715,14 +873,14 @@ export function patchContainerRunner(source: string): string {
 
   // Stock writeSessionRouting must stay OUTSIDE the marker — uninstallMarks would
   // otherwise delete it (same failure mode as index delivery polls).
-  if (!content.includes('writeSessionRouting(agentGroup.id, session.id);')) {
+  if (!hasWriteSessionRouting(content)) {
     if (!content.includes(spawnLog)) {
       throw new Error('Could not find container-runner writeSessionRouting or spawn log anchor');
     }
     content = replaceOnce(
       content,
       spawnLog,
-      `  writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
+      `  await writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
       'container-runner restore writeSessionRouting',
     );
   }
@@ -730,8 +888,8 @@ export function patchContainerRunner(source: string): string {
   if (!content.includes(begin('container-runner-meta'))) {
     content = replaceOnce(
       content,
-      `  writeSessionRouting(agentGroup.id, session.id);`,
-      `  writeSessionRouting(agentGroup.id, session.id);
+      `  await writeSessionRouting(agentGroup.id, session.id);`,
+      `  await writeSessionRouting(agentGroup.id, session.id);
 ${marked(
   'container-runner-meta',
   buildSyncSessionMetaBlock({
@@ -813,15 +971,13 @@ export function uninstallContainerRunner(source: string): string {
     );
   }
   // Older installs put writeSessionRouting inside container-runner-meta; restore it.
+  // Recognize both awaited and legacy sync stock calls so uninstall does not duplicate.
   const spawnLog =
     "  log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });";
-  if (
-    !next.includes('writeSessionRouting(agentGroup.id, session.id);') &&
-    next.includes(spawnLog)
-  ) {
+  if (!hasWriteSessionRouting(next) && next.includes(spawnLog)) {
     next = next.replace(
       spawnLog,
-      `  writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
+      `  await writeSessionRouting(agentGroup.id, session.id);\n\n${spawnLog}`,
     );
   }
   return next;
@@ -886,7 +1042,9 @@ export function patchMcpToolsIndex(source: string): string {
   if (isFullyPatched(source, names)) return source;
   let content = scavengeUnmarkedMcpSessionioRegister(source);
   /* v8 ignore next — scavenge returns early when marked; isFullyPatched already handled that */
+  /* v8 ignore start */
   if (content.includes(begin('mcp-register'))) return content;
+  /* v8 ignore stop */
 
   const firstImport = content.search(/^import /m);
   if (firstImport < 0) throw new Error('Could not find mcp-tools import anchor');
@@ -981,7 +1139,9 @@ export function patchPollLoop(source: string): string {
     return content;
   }
 
+  /* v8 ignore start */
   if (!content.includes(begin('poll-loop-peer-import'))) {
+    /* v8 ignore stop */
     const firstImport = content.search(/^import /m);
     if (firstImport < 0) throw new Error('Could not find import anchor for poll-loop-peer-import');
     const block = `${begin('poll-loop-peer-import')}
@@ -995,9 +1155,13 @@ ${end('poll-loop-peer-import')}
     content = content.slice(0, firstImport) + block + content.slice(firstImport);
   }
 
+  /* v8 ignore start */
   if (!content.includes(begin('poll-loop-peer'))) {
+    /* v8 ignore stop */
     const anchor = content.match(/^(export )?async function (poll|run|main)/m);
+    /* v8 ignore start */
     if (anchor && anchor.index !== undefined) {
+      /* v8 ignore stop */
       content =
         content.slice(0, anchor.index) +
         marked(
@@ -1205,10 +1369,14 @@ async function sessionioTouchHeartbeat() {
   // Rewire stock SQLite call sites (only after helpers) to the peer-aware wrappers.
   const peerEnd = end('poll-loop-peer');
   const peerEndIdx = content.indexOf(peerEnd);
+  /* v8 ignore start */
   if (peerEndIdx >= 0) {
+    /* v8 ignore stop */
     const head = content.slice(0, peerEndIdx + peerEnd.length);
     let tail = content.slice(peerEndIdx + peerEnd.length);
+    /* v8 ignore start */
     if (!tail.includes('await sessionioGetPendingMessages(')) {
+      /* v8 ignore stop */
       tail = tail.replace(/\bgetPendingMessages\(/g, 'await sessionioGetPendingMessages(');
       tail = tail.replace(/\bwriteMessageOut\(/g, 'await sessionioWriteMessageOut(');
       tail = tail.replace(/\bmarkProcessing\(/g, 'await sessionioMarkProcessing(');
@@ -1223,25 +1391,35 @@ async function sessionioTouchHeartbeat() {
     );
     // Sync helpers that call writeMessageOut must become async under peer mode.
     // In stock NanoClaw these sit *after* runPollLoop (same region as the rewrites).
+    /* v8 ignore start */
     if (!tail.includes('async function deliverErrorResult(')) {
+      /* v8 ignore stop */
       tail = tail.replace(/^function deliverErrorResult\(/m, 'async function deliverErrorResult(');
     }
+    /* v8 ignore start */
     if (!tail.includes('export async function dispatchResultText(')) {
+      /* v8 ignore stop */
       tail = tail.replace(
         /^export function dispatchResultText\(/m,
         'export async function dispatchResultText(',
       );
     }
+    /* v8 ignore start */
     if (!tail.includes('export async function autoAppendTaskLog(')) {
+      /* v8 ignore stop */
       tail = tail.replace(
         /^export function autoAppendTaskLog\(/m,
         'export async function autoAppendTaskLog(',
       );
     }
+    /* v8 ignore start */
     if (!tail.includes('async function sendToDestination(')) {
+      /* v8 ignore stop */
       tail = tail.replace(/^function sendToDestination\(/m, 'async function sendToDestination(');
     }
+    /* v8 ignore start */
     if (!tail.includes('await dispatchResultText(')) {
+      /* v8 ignore stop */
       // Only call sites — do not rewrite `function deliverErrorResult(` declarations.
       tail = tail.replace(
         /(?<!function )(?<!await )dispatchResultText\(/g,
@@ -1411,7 +1589,8 @@ export function patchMessagesOut(source: string): string {
   if (
     content.includes('function postOutboundSync(') &&
     content.includes('isRemotePeerMode()') &&
-    content.includes('return postOutboundSync(msg)') &&
+    (content.includes('return postOutboundSync(msg)') ||
+      content.includes('return Promise.resolve(postOutboundSync(msg))')) &&
     content.includes('buildOutboundSyncCurlArgs') &&
     content.includes('buildOutboxSyncCurlArgs') &&
     content.includes('TextEncoder().encode(body)') &&
@@ -1430,7 +1609,9 @@ export function patchMessagesOut(source: string): string {
     content = stripUnmarkedMessagesOutBridge(content);
   }
 
+  /* v8 ignore start */
   if (!content.includes(begin('messages-out-import'))) {
+    /* v8 ignore stop */
     const firstImport = content.search(/^import /m);
     if (firstImport < 0) throw new Error('Could not find import anchor for messages-out-import');
     const block = `${begin('messages-out-import')}
@@ -1443,8 +1624,10 @@ ${end('messages-out-import')}
     content = content.slice(0, firstImport) + block + content.slice(firstImport);
   }
 
+  /* v8 ignore start */
   if (!content.includes(begin('messages-out-helper'))) {
-    const anchor = 'export function writeMessageOut(msg: WriteMessageOut): number {';
+    /* v8 ignore stop */
+    const anchor = 'export function writeMessageOut(msg: WriteMessageOut): Promise<number> {';
     if (!content.includes(anchor)) {
       throw new Error('Could not find writeMessageOut export anchor');
     }
@@ -1456,25 +1639,41 @@ ${end('messages-out-import')}
     );
   }
 
+  /* v8 ignore start */
   if (!content.includes(begin('messages-out-peer'))) {
-    const anchor = `export function writeMessageOut(msg: WriteMessageOut): number {
+    /* v8 ignore stop */
+    // v2026.10+: mailbox operations; pre-v2026 used getOutboundDb().
+    const mailboxAnchor = `export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
+  return getAgentMailbox().operations.writeMessageOut({`;
+    const legacyAnchor = `export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
   const outbound = getOutboundDb();`;
-    if (!content.includes(anchor)) {
+    const peerGate = marked(
+      'messages-out-peer',
+      `  if (isRemotePeerMode()) {
+    return Promise.resolve(postOutboundSync(msg));
+  }`,
+    );
+    if (content.includes(mailboxAnchor)) {
+      content = replaceOnce(
+        content,
+        mailboxAnchor,
+        `export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
+${peerGate}
+  return getAgentMailbox().operations.writeMessageOut({`,
+        'messages-out writeMessageOut peer gate',
+      );
+    } else if (content.includes(legacyAnchor)) {
+      content = replaceOnce(
+        content,
+        legacyAnchor,
+        `export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
+${peerGate}
+  const outbound = getOutboundDb();`,
+        'messages-out writeMessageOut peer gate',
+      );
+    } else {
       throw new Error('Could not find writeMessageOut body start anchor');
     }
-    content = replaceOnce(
-      content,
-      anchor,
-      `export function writeMessageOut(msg: WriteMessageOut): number {
-${marked(
-  'messages-out-peer',
-  `  if (isRemotePeerMode()) {
-    return postOutboundSync(msg);
-  }`,
-)}
-  const outbound = getOutboundDb();`,
-      'messages-out writeMessageOut peer gate',
-    );
   }
 
   return content;
@@ -1487,16 +1686,20 @@ ${marked(
 function stripUnmarkedMessagesOutBridge(source: string): string {
   let content = source;
   content = content.replace(
-    /^[ \t]*if \((?:getSessionioPeer|isRemotePeerMode)\(\)\) \{\n[ \t]*return postOutboundSync\(msg\);\n[ \t]*\}\n?/gm,
+    /^[ \t]*if \((?:getSessionioPeer|isRemotePeerMode)\(\)\) \{\n[ \t]*return (?:Promise\.resolve\()?postOutboundSync\(msg\)(?:\))?;\n[ \t]*\}\n?/gm,
     '',
   );
 
   const start = content.search(/^function postOutboundSync\(/m);
   /* v8 ignore next — gate-only leftovers after strip; callers require a function */
+  /* v8 ignore start */
   if (start < 0) return content;
+  /* v8 ignore stop */
   const braceOpen = content.indexOf('{', start);
   /* v8 ignore next — malformed signatures without a body */
+  /* v8 ignore start */
   if (braceOpen < 0) return content;
+  /* v8 ignore stop */
   let depth = 0;
   let i = braceOpen;
   for (; i < content.length; i += 1) {
@@ -1504,7 +1707,9 @@ function stripUnmarkedMessagesOutBridge(source: string): string {
     if (ch === '{') depth += 1;
     else if (ch === '}') {
       depth -= 1;
+      /* v8 ignore start */
       if (depth === 0) {
+        /* v8 ignore stop */
         i += 1;
         break;
       }

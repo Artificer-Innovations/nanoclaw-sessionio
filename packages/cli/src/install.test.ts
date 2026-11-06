@@ -107,11 +107,12 @@ describe('patches', () => {
     expect(patched).toContain('@nanoclaw-sessionio:delivery-drain:begin');
     expect(patched).toContain('@nanoclaw-sessionio:delivery-outbox:begin');
     expect(patched).toContain('consumeOutbox');
-    expect(patched).toContain('inbound DB unavailable');
+    expect(patched).toContain('transport.pollOutbound');
+    expect(patched).toContain('mailbox.getDeliveredIds()');
     expect(patched).not.toContain('inDb as Database.Database');
     expect(patchDelivery(patched)).toBe(patched);
     const restored = uninstallDelivery(patched);
-    expect(restored).toContain('outDb.close()');
+    expect(restored).toContain('withExistingMailboxSession');
     expect(restored).toContain('readOutboxFiles(session.agent_group_id, session.id, msg.id');
     expect(restored).not.toContain('consumeOutbox');
     expect(restored).not.toContain('@nanoclaw-sessionio:delivery-drain:begin');
@@ -249,19 +250,15 @@ async function drainSession(session: Session): Promise<void> { void session; }
     expect(scavengeUnmarkedDeliveryOutbox(marked)).toBe(marked);
   });
 
-  it('upgrades stale delivery drain that continued with inDb=null', () => {
+  it('upgrades stale delivery drain that still type-asserts inDb', () => {
     const good = patchDelivery(STOCK_DELIVERY);
-    const stale = good
-      .replace('inbound DB unavailable, deferring delivery', 'legacy null path')
-      .replace('let inDb: Database.Database;', 'let inDb: Database.Database | null = null;')
-      .replace(
-        'const platformMsgId = await deliverMessage(msg, session, inDb);',
-        'const platformMsgId = await deliverMessage(msg, session, inDb as Database.Database);',
-      )
-      .replace('inDb.close();', 'inDb?.close();');
+    const stale = good.replace(
+      'const platformMsgId = await deliverMessage(msg, session);',
+      'const platformMsgId = await deliverMessage(msg, session, inDb as Database.Database);',
+    );
     expect(stale).toContain('inDb as Database.Database');
     const upgraded = patchDelivery(stale);
-    expect(upgraded).toContain('inbound DB unavailable');
+    expect(upgraded).toContain('transport.pollOutbound');
     expect(upgraded).not.toContain('inDb as Database.Database');
   });
 
